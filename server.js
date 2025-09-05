@@ -23,13 +23,11 @@ app.use(bodyParser.json());       // Parses JSON request bodies
 app.use(express.static(path.join(__dirname))); // Serve static files from project root
 
 // ===== MongoDB Atlas Connection =====
-mongoose.connect(
-  "mongodb+srv://jkgang432:Jk_gang123@cluster0.lvpe7rz.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0",
-  {
+mongoose.connect(process.env.MONGO_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true
-  }
-)
+})
+
 .then(() => console.log("MongoDB Atlas Connected"))
 .catch(err => console.error("MongoDB Connection Error:", err));
 
