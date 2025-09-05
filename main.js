@@ -7,8 +7,13 @@
     - Stores login state in localStorage for authentication.
 */
 
+/* --- CONFIG --- */
+// Automatically switch between local and deployed backend
+const API_BASE_URL = window.location.hostname === "localhost"
+    ? "http://localhost:5000"
+    : "https://your-app-name.onrender.com";  // <-- replace with your Render backend URL
+
 /* --- FORM UTILITIES --- */
-// Display a form-wide message (success/error)
 function setFormMessage(formElement, type, message) {
     const messageElement = formElement.querySelector(".form__message");
     messageElement.textContent = message;
@@ -16,13 +21,11 @@ function setFormMessage(formElement, type, message) {
     messageElement.classList.add(`form__message--${type}`);
 }
 
-// Add input-specific error
 function setInputError(inputElement, message) {
     inputElement.classList.add("form__input--error");
     inputElement.parentElement.querySelector(".form__input-error-message").textContent = message;
 }
 
-// Clear error from input
 function clearInputError(inputElement) {
     inputElement.classList.remove("form__input--error");
     inputElement.parentElement.querySelector(".form__input-error-message").textContent = "";
@@ -33,14 +36,13 @@ document.addEventListener("DOMContentLoaded", () => {
     const loginForm = document.querySelector('#login');
     const createAccountForm = document.querySelector('#createAccount');
 
-    // Toggle from login -> signup
+    // Toggle login/signup
     document.querySelector("#linkCreateAccount").addEventListener("click", e => {
         e.preventDefault();
         loginForm.classList.add("form--hidden");
         createAccountForm.classList.remove("form--hidden");
     });
 
-    // Toggle from signup -> login
     document.querySelector("#linkLogin").addEventListener("click", e => {
         e.preventDefault();
         loginForm.classList.remove("form--hidden");
@@ -49,59 +51,52 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Login Form
     loginForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
+        e.preventDefault();
 
-    const identifier = document.querySelector("#loginUsername").value.trim();
-    const password = document.querySelector("#loginPassword").value.trim();
+        const identifier = document.querySelector("#loginUsername").value.trim();
+        const password = document.querySelector("#loginPassword").value.trim();
 
-    if (!identifier || !password) {
-        setFormMessage(loginForm, "error", "Please fill in all fields");
-        return;
-    }
-
-    try {
-        // Send login request to backend
-        const res = await fetch("http://localhost:5000/login", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ identifier, password })
-        });
-
-        const data = await res.json();
-
-        if (res.ok && data.success) {
-            setFormMessage(loginForm, "success", data.message);
-
-             // Save login status in localStorage
-            localStorage.setItem("loggedInUser", identifier);
-
-            // Redirect to CSV upload page
-            setTimeout(() => {
-                window.location.href = "upload.html";
-            }, 1000);
-        } else {
-            setFormMessage(loginForm, "error", data.message || "Login failed");
+        if (!identifier || !password) {
+            setFormMessage(loginForm, "error", "Please fill in all fields");
+            return;
         }
-    } catch (err) {
-        console.error("Login error:", err);
-        setFormMessage(loginForm, "error", "Server error. Please try again.");
-    }
-});
 
+        try {
+            const res = await fetch(`${API_BASE_URL}/login`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ identifier, password })
+            });
+
+            const data = await res.json();
+
+            if (res.ok && data.success) {
+                setFormMessage(loginForm, "success", data.message);
+                localStorage.setItem("loggedInUser", identifier);
+
+                setTimeout(() => {
+                    window.location.href = "upload.html";
+                }, 1000);
+            } else {
+                setFormMessage(loginForm, "error", data.message || "Login failed");
+            }
+        } catch (err) {
+            console.error("Login error:", err);
+            setFormMessage(loginForm, "error", "Server error. Please try again.");
+        }
+    });
 
     // Real-time validation
     document.querySelectorAll(".form__input").forEach(inputElement => {
         inputElement.addEventListener("input", e => {
             clearInputError(inputElement);
 
-            // Username validation
             if (e.target.id === "signupUsername") {
                 if (e.target.value.length > 0 && e.target.value.length < 10) {
                     setInputError(inputElement, "Username must be at least 10 characters in length");
                 }
             }
 
-            // Email validation
             if (e.target.id === "signupEmail") {
                 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
                 if (e.target.value.length > 0 && !emailRegex.test(e.target.value)) {
@@ -109,7 +104,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             }
 
-            // Password validation
             if (e.target.id === "signupPassword") {
                 const password = e.target.value;
                 if (password.length > 0 && password.length < 8) {
@@ -119,7 +113,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             }
 
-            // Confirm password validation
             if (e.target.id === "signupConfirmPassword") {
                 const password = document.querySelector("#signupPassword").value;
                 if (e.target.value.length > 0 && e.target.value !== password) {
@@ -129,11 +122,10 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     });
 
-    // Single signup handler
+    // Signup Form
     createAccountForm.addEventListener("submit", async (e) => {
         e.preventDefault();
 
-        // Final validation
         const inputs = createAccountForm.querySelectorAll(".form__input");
         let hasErrors = false;
         inputs.forEach(input => {
@@ -147,14 +139,12 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
-        // Collect form values
         const username = document.querySelector("#signupUsername").value;
         const email = document.querySelector("#signupEmail").value;
         const password = document.querySelector("#signupPassword").value;
 
         try {
-            // Send signup request
-            const res = await fetch("http://localhost:5000/signup", {
+            const res = await fetch(`${API_BASE_URL}/signup`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ username, email, password })
