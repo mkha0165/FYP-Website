@@ -11,7 +11,7 @@
 // Automatically switch between local and deployed backend
 const API_BASE_URL = window.location.hostname === "localhost"
     ? "http://localhost:5000"
-    : "https://fyp-website-xkq5.onrender.com";  // <-- replace with your Render backend URL
+    : "https://fyp-website-xkq5.onrender.com"; 
 
 /* --- FORM UTILITIES --- */
 function setFormMessage(formElement, type, message) {
