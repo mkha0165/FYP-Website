@@ -99,6 +99,36 @@ app.post("/login", async (req, res) => {
   }
 });
 
+// ===== Reset Password Endpoint =====
+app.post("/reset-password", async (req, res) => {
+  try {
+    const { identifier, newPassword } = req.body;
+
+    if (!identifier || !newPassword) {
+      return res.status(400).json({ error: "All fields are required" });
+    }
+
+    const user = await User.findOne({
+      $or: [{ email: identifier }, { username: identifier }]
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: "User not found" });
+    }
+
+    // Hash new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    user.password = hashedPassword;
+    await user.save();
+
+    res.json({ message: "Password reset successful. Please log in." });
+  } catch (err) {
+    console.error("Reset password error:", err);
+    res.status(500).json({ error: "Server error", details: err.message });
+  }
+});
+
+
 // ===== Catch-All Route (serves index.html for unknown routes) =====
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));

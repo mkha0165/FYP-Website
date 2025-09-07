@@ -49,6 +49,63 @@ document.addEventListener("DOMContentLoaded", () => {
         createAccountForm.classList.add("form--hidden");
     });
 
+    const resetPasswordForm = document.querySelector('#resetPassword');
+
+// Show reset form
+document.querySelector(".form__link").addEventListener("click", e => {
+    e.preventDefault();
+    loginForm.classList.add("form--hidden");
+    resetPasswordForm.classList.remove("form--hidden");
+});
+
+// Back to login
+document.querySelector("#linkBackLogin").addEventListener("click", e => {
+    e.preventDefault();
+    resetPasswordForm.classList.add("form--hidden");
+    loginForm.classList.remove("form--hidden");
+});
+
+// Handle reset form submit
+resetPasswordForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    const identifier = document.querySelector("#resetIdentifier").value.trim();
+    const newPassword = document.querySelector("#resetNewPassword").value.trim();
+    const confirmPassword = document.querySelector("#resetConfirmPassword").value.trim();
+
+    if (!identifier || !newPassword || !confirmPassword) {
+        setFormMessage(resetPasswordForm, "error", "Please fill in all fields");
+        return;
+    }
+    if (newPassword !== confirmPassword) {
+        setFormMessage(resetPasswordForm, "error", "Passwords do not match");
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API_BASE_URL}/reset-password`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ identifier, newPassword })
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+            setFormMessage(resetPasswordForm, "success", data.message);
+            setTimeout(() => {
+                resetPasswordForm.classList.add("form--hidden");
+                loginForm.classList.remove("form--hidden");
+            }, 1500);
+        } else {
+            setFormMessage(resetPasswordForm, "error", data.error || "Reset failed");
+        }
+    } catch (err) {
+        console.error(err);
+        setFormMessage(resetPasswordForm, "error", "Server error. Please try again.");
+    }
+});
+
+
     // Login Form
     loginForm.addEventListener("submit", async (e) => {
         e.preventDefault();
