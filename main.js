@@ -31,6 +31,13 @@ function clearInputError(inputElement) {
     inputElement.parentElement.querySelector(".form__input-error-message").textContent = "";
 }
 
+// --- Username Validation Helper ---
+function validateUsername(username) {
+    // Must start with a letter, followed by 2 to 19 letters/numbers/._ (total 3 to 20 chars)
+    const regex = /^[a-zA-Z][a-zA-Z0-9._]{2,19}$/;
+    return regex.test(username);
+}
+
 /* --- EVENT HANDLERS --- */
 document.addEventListener("DOMContentLoaded", () => {
     const loginForm = document.querySelector('#login');
@@ -149,8 +156,9 @@ resetPasswordForm.addEventListener("submit", async (e) => {
             clearInputError(inputElement);
 
             if (e.target.id === "signupUsername") {
-                if (e.target.value.length > 0 && e.target.value.length < 10) {
-                    setInputError(inputElement, "Username must be at least 10 characters in length");
+                const value = e.target.value.trim();
+                if (value.length > 0 && !validateUsername(value)) {
+                    setInputError(inputElement, "Username must start with a letter, 3 to 20 chars, and only letters, numbers, underscores, or dots");
                 }
             }
 
@@ -199,6 +207,12 @@ resetPasswordForm.addEventListener("submit", async (e) => {
         const username = document.querySelector("#signupUsername").value;
         const email = document.querySelector("#signupEmail").value;
         const password = document.querySelector("#signupPassword").value;
+
+        // Extra validation before sending request
+        if (!validateUsername(username)) {
+            setFormMessage(createAccountForm, "error", "Invalid username. Must start with a letter, 3 to 20 chars, only letters/numbers/._");
+            return;
+        }
 
         try {
             const res = await fetch(`${API_BASE_URL}/signup`, {
