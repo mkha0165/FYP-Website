@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Prediction Results - PT501</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body class="min-h-screen bg-gray-900 text-white p-6">
+  <div class="max-w-6xl mx-auto">
+    <h1 class="text-2xl font-bold mb-4">Prediction Results (PT501)</h1>
+
+    <div id="meta" class="mb-6 text-sm text-gray-300"></div>
+
+    <div id="plot-preds" class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[500px]"></div>
+    <div id="plot-cva"   class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[600px]"></div>
+    <div id="plot-shap" class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[500px]"></div>
+
+  </div>
+
+  <script>
+    // === Load prediction results saved by upload.html ===
+    const res = JSON.parse(sessionStorage.getItem("predictionResult") || "null");
+    if (!res) {
+      alert("No prediction data found. Please upload a CSV first.");
+      window.location.href = "upload.html";
+    }
+
+    // Find PT501 index
+    const targetName = "PT501";
+    const j = res.targets.indexOf(targetName);
+    if (j === -1) {
+      document.getElementById("meta").innerHTML =
+        `<div class="text-red-400">Error: PT501 not found in model targets.</div>`;
+      throw new Error("PT501 not in targets");
+    }
+
+    const t = res.time_index;
+    const hasTruth = Array.isArray(res.y_true) && res.y_true.length > 0;
+
+    // === Meta info ===
+    const meta = document.getElementById("meta");
+    meta.innerHTML = `
+      <div>Target variable: <code>${targetName}</code></div>
+      ${hasTruth ? "" : "<div class='text-yellow-400 mt-1'>No ground-truth values — predictions only.</div>"}
+    `;
+
+    // === Plot configs ===
+    const baseLayout = {
+      margin: { t: 40, r: 20, b: 50, l: 50 },
+      hovermode: "x unified",
+      dragmode: "pan",
+      uirevision: true,
+      legend: { orientation: "h", y: -0.2, font: { size: 11 } }
+    };
+    const baseConfig = {
+      responsive: true, displaylogo: false, scrollZoom: true,
+      modeBarButtonsToRemove: [
+        "select2d","lasso2d","zoom","zoomIn2d","zoomOut2d","autoScale2d","resetScale2d","toggleSpikelines"
+      ]
+    };
+
+    // === PT501 Predictions plot ===
+    Plotly.newPlot("plot-preds", [{
+      x: t, y: res.y_pred.map(r => r[j]),
+      mode: "lines", name: "PT501 Predicted"
+    }], { ...baseLayout, title: "Predicted PT501", yaxis: { title: "Value" } }, baseConfig);
+
+    // === CVA plot (RAW with fault detection) ===
+    (() => {
+      // 1) Raw arrays
+      let tCVA = (res.cva?.t || []).slice();
+      let T2   = (res.cva?.T2 || []).slice();
+      let Q    = (res.cva?.Q  || []).slice();
+      const T2_UCL = Number(res.cva?.T2_UCL ?? 0);
+      const Q_UCL  = Number(res.cva?.Q_UCL  ?? 0);
+
+      if (!tCVA.length || !T2.length || !Q.length) {
+        document.getElementById("plot-cva").innerHTML =
+          "<div class='text-yellow-400'>CVA not available (missing arrays or UCLs).</div>";
+        return;
+      }
+
+      // 2) Burn-in (first samples spike due to block formation)
+      const burnIn = Math.min(50, T2.length - 1);
+      if (burnIn > 0) {
+        tCVA = tCVA.slice(burnIn);
+        T2   = T2.slice(burnIn);
+        Q    = Q.slice(burnIn);
+      }
+
+      // 3) Fault mask
+      const faultMask = T2.map((v, i) => (v > T2_UCL) || (Q[i] > Q_UCL));
+
+      // 4) Find fault windows (continuous runs of true)
+      const faultWindows = [];
+      let i = 0;
+      while (i < faultMask.length) {
+        if (faultMask[i]) {
+          const start = i;
+          while (i < faultMask.length && faultMask[i]) i++;
+          const end = i - 1;
+          faultWindows.push([start, end]);
+        } else {
+          i++;
+        }
+      }
+
+      // 5) Build traces
+      const tracesCVA = [
+        { x: tCVA, y: T2, mode: "lines", name: "T²", xaxis: "x", yaxis: "y" },
+        { x: tCVA, y: tCVA.map(() => T2_UCL), mode: "lines", name: "T² UCL", line: { dash: "dash" }, xaxis: "x", yaxis: "y" },
+        { x: tCVA, y: Q,  mode: "lines", name: "Q",  xaxis: "x2", yaxis: "y2" },
+        { x: tCVA, y: tCVA.map(() => Q_UCL), mode: "lines", name: "Q UCL", line: { dash: "dash" }, xaxis: "x2", yaxis: "y2" }
+      ];
+
+      // 6) Axis ranges (cap)
+      const capT2 = 1e4, capQ = 1e4;
+      const maxT2 = Math.max(...T2), maxQ = Math.max(...Q);
+
+      // 7) Shapes (fault shading + lines)
+      const shapes = [];
+      const maxWindowsToDraw = 20;
+      for (let k = 0; k < Math.min(maxWindowsToDraw, faultWindows.length); k++) {
+        const [s, e] = faultWindows[k];
+        const x0 = tCVA[s], x1 = tCVA[e];
+        shapes.push(
+          // Shaded regions
+          { type: "rect", xref: "x", yref: "paper", x0, x1, y0: 0.52, y1: 0.98, fillcolor: "rgba(255,99,71,0.15)", line: { width: 0 } },
+          { type: "rect", xref: "x2", yref: "paper", x0, x1, y0: 0.02, y1: 0.48, fillcolor: "rgba(255,99,71,0.15)", line: { width: 0 } },
+          // Start/End lines top
+          { type: "line", xref: "x", yref: "y", x0, x1: x0, y0: 0, y1: Math.min(capT2, maxT2*1.1), line: { color: "tomato", width: 1, dash: "dot" } },
+          { type: "line", xref: "x", yref: "y", x0: x1, x1, y0: 0, y1: Math.min(capT2, maxT2*1.1), line: { color: "tomato", width: 1, dash: "dot" } },
+          // Start/End lines bottom
+          { type: "line", xref: "x2", yref: "y2", x0, x1: x0, y0: 0, y1: Math.min(capQ, maxQ*1.1), line: { color: "tomato", width: 1, dash: "dot" } },
+          { type: "line", xref: "x2", yref: "y2", x0: x1, x1, y0: 0, y1: Math.min(capQ, maxQ*1.1), line: { color: "tomato", width: 1, dash: "dot" } }
+        );
+      }
+      const annotations = [];
+    for (let k = 0; k < Math.min(maxWindowsToDraw, faultWindows.length); k++) {
+    const [s, e] = faultWindows[k];
+    const x0 = tCVA[s], x1 = tCVA[e];
+    // Fault Start annotation (top subplot)
+    annotations.push({
+        x: x0,
+        y: Math.min(capT2, maxT2*1.15),
+        xref: "x",
+        yref: "y",
+        text: "Fault Start",
+        showarrow: true,
+        arrowhead: 2,
+        ax: 0,
+        ay: -30,
+        font: { color: "tomato", size: 12 },
+        bgcolor: "rgba(255,99,71,0.15)"
+    });
+    // Fault End annotation (top subplot)
+    annotations.push({
+        x: x1,
+        y: Math.min(capT2, maxT2*1.15),
+        xref: "x",
+        yref: "y",
+        text: "Fault End",
+        showarrow: true,
+        arrowhead: 2,
+        ax: 0,
+        ay: -30,
+        font: { color: "tomato", size: 12 },
+        bgcolor: "rgba(255,99,71,0.15)"
+    });
+    // Fault Start annotation (bottom subplot)
+    annotations.push({
+        x: x0,
+        y: Math.min(capQ, maxQ*1.15),
+        xref: "x2",
+        yref: "y2",
+        text: "Fault Start",
+        showarrow: true,
+        arrowhead: 2,
+        ax: 0,
+        ay: -30,
+        font: { color: "tomato", size: 12 },
+        bgcolor: "rgba(255,99,71,0.15)"
+    });
+    // Fault End annotation (bottom subplot)
+    annotations.push({
+        x: x1,
+        y: Math.min(capQ, maxQ*1.15),
+        xref: "x2",
+        yref: "y2",
+        text: "Fault End",
+        showarrow: true,
+        arrowhead: 2,
+        ax: 0,
+        ay: -30,
+        font: { color: "tomato", size: 12 },
+        bgcolor: "rgba(255,99,71,0.15)"
+    });
+    }
+      // 8) Layout
+      const layoutCVA = {
+        ...baseLayout,
+        title: "CVA Indices (Raw)",
+        height: 600,
+        grid: { rows: 2, columns: 1, pattern: "independent" },
+        xaxis:  { title: "Time" },
+        yaxis:  { title: "Hotelling T²", range: [0, Math.min(capT2, maxT2*1.2)] },
+        xaxis2: { title: "Time" },
+        yaxis2: { title: "Squared Prediction Error Q", range: [0, Math.min(capQ, maxQ*1.2)] },
+        shapes,
+      };
+
+      Plotly.newPlot("plot-cva", tracesCVA, layoutCVA, baseConfig);
+
+      // Update breach rate
+      const breachRate = faultMask.length ? (faultMask.filter(Boolean).length / faultMask.length) : 0;
+      meta.insertAdjacentHTML("beforeend",
+        `<div class="mt-1">CVA breach rate (raw): <strong>${(breachRate*100).toFixed(2)}%</strong></div>`
+      );
+    })();
+
+    // === Responsive resize ===
+    window.addEventListener("resize", () => {
+      Plotly.Plots.resize("plot-preds");
+      Plotly.Plots.resize("plot-cva");
+    });
+
+
+    fetch("shap_importance_pt501.json")  // serve this file statically alongside your site
+    .then(r => r.json())
+    .then(data => {
+        const items = data.feature_importance.slice(0, 15); // top 15
+        const x = items.map(d => d.feature);
+        const y = items.map(d => d.score);
+        Plotly.newPlot("plot-shap", [{
+        type: "bar", x, y, name: "Impact (mean |SHAP|)"
+        }], {
+        title: "Which sensors influence PT501 predictions?",
+        margin: { t: 40, r: 20, b: 80, l: 60 },
+        xaxis: { tickangle: -30 },
+        yaxis: { title: "Mean |SHAP| (aggregated over time)" },
+        paper_bgcolor: "#1f2937", plot_bgcolor: "#1f2937",
+        font: { color: "#fff" }
+        }, { responsive: true, displaylogo: false });
+    });
+  </script>
+</body>
+</html>

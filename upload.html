@@ -1,8 +1,8 @@
 <!--
   Purpose: Protected page where logged-in users can upload CSV files.
   - Verifies login using localStorage.
-  - Provides drag-and-drop and file browser upload.
-  - Allows logout, which clears login state.
+  - Sends the CSV to FastAPI /predict.
+  - Stores the API JSON in sessionStorage and redirects to prediction.html.
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -46,12 +46,12 @@
       Browse Files
     </button>
 
-    <!-- Upload progress/status -->
-    <div id="uploadStatus" class="text-white mt-4"></div>
+    <!-- Upload status -->
+    <div id="uploadStatus" class="text-white mt-4 min-h-6"></div>
   </div>
 
   <script>
-    // Login Protection
+    // ===== Login protection =====
     const loggedInUser = localStorage.getItem("loggedInUser");
     if (!loggedInUser) {
       alert("You must log in first!");
@@ -60,59 +60,72 @@
       document.getElementById("loggedInUser").textContent = loggedInUser;
     }
 
-    // Logout
+    // ===== Logout =====
     document.getElementById("logoutBtn").addEventListener("click", () => {
       localStorage.removeItem("loggedInUser");
       window.location.href = "index.html";
     });
 
-    // Upload simulation
+    // ===== Elements =====
     const fileInput = document.getElementById("fileInput");
     const dropZone = document.getElementById("dropZone");
     const browseBtn = document.getElementById("browseBtn");
     const uploadStatus = document.getElementById("uploadStatus");
 
-    let uploadProgress = 0;
+    // ===== API config =====
+    const API_URL = "http://127.0.0.1:8000/predict"; // <- change to your server URL in prod
 
-    function simulateUpload(fileName) {
-      uploadStatus.innerHTML = `
-        <p>Uploading <strong>${fileName}</strong>...</p>
-        <div class="w-full bg-white/20 h-2 rounded-full mt-1">
-          <div id="progressBar" class="bg-white h-2 rounded-full" style="width: 0%"></div>
-        </div>
-        <p id="progressText" class="text-right mt-1 text-sm">0%</p>
-      `;
+    async function postFileToAPI(file) {
+      const formData = new FormData();
+      formData.append("file", file);
 
-      uploadProgress = 0;
-      const interval = setInterval(() => {
-        uploadProgress += 5;
-        document.getElementById("progressBar").style.width = `${uploadProgress}%`;
-        document.getElementById("progressText").textContent = `${uploadProgress}%`;
+      // Simple status message
+      uploadStatus.innerHTML = `<span class="text-gray-200">Uploading <strong>${file.name}</strong>…</span>`;
+      browseBtn.disabled = true;
+      dropZone.classList.add("pointer-events-none", "opacity-60");
 
-        if (uploadProgress >= 100) {
-          clearInterval(interval);
-          uploadStatus.innerHTML = `
-            <div class="text-green-400 font-semibold mt-2 text-left">
-              <strong>${fileName}</strong> uploaded successfully!
-            </div>
-          `;
-        }
-      }, 200);
+      const res = await fetch(API_URL, { method: "POST", body: formData });
+
+      browseBtn.disabled = false;
+      dropZone.classList.remove("pointer-events-none", "opacity-60");
+
+      if (!res.ok) {
+        const msg = await res.text();
+        throw new Error(msg || "Upload failed");
+      }
+      return res.json();
     }
 
-    // Event listeners for upload area
+    async function handleFile(file) {
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith(".csv")) {
+        uploadStatus.innerHTML = `<span class="text-yellow-300">Please upload a .csv file.</span>`;
+        return;
+      }
+      try {
+        const result = await postFileToAPI(file);
+        uploadStatus.innerHTML = `<span class="text-green-400 font-semibold">${file.name} processed successfully. Redirecting…</span>`;
+        // Save API JSON for next page
+        sessionStorage.setItem("predictionResult", JSON.stringify(result));
+        // Go to prediction page
+        window.location.href = "prediction.html";
+      } catch (err) {
+        uploadStatus.innerHTML = `<div class="text-red-400 mt-2 break-words">Error: ${err.message}</div>`;
+      }
+    }
+
+    // ===== Drag & drop & browse =====
     dropZone.addEventListener("click", () => fileInput.click());
     dropZone.addEventListener("dragover", (e) => e.preventDefault());
     dropZone.addEventListener("drop", (e) => {
       e.preventDefault();
-      const file = e.dataTransfer.files[0];
-      if (file) simulateUpload(file.name);
+      const file = e.dataTransfer.files?.[0];
+      handleFile(file);
     });
-
     browseBtn.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", (e) => {
-      const file = e.target.files[0];
-      if (file) simulateUpload(file.name);
+      const file = e.target.files?.[0];
+      handleFile(file);
     });
   </script>
 </body>
