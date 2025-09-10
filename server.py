@@ -1,30 +1,40 @@
 # server.py
-import json, io, os
+import json, io, os, re
 import numpy as np
 import pandas as pd
 import torch
-from fastapi import FastAPI, UploadFile, File, HTTPException,Body
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 import joblib
-import re, io
-from fastapi.responses import Response
 
 from report_generator import build_pdf_from_result
 
 # ---------- Load artifacts at startup ----------
-with open("config.json") as f: CFG = json.load(f)
-with open("thresholds.json") as f: THR = json.load(f)
+with open("config.json") as f:
+    CFG = json.load(f)
+with open("thresholds.json") as f:
+    THR = json.load(f)
 
 SCALER_X = joblib.load("scalerX.pkl")
 SCALER_Y = joblib.load("scalery.pkl")
 J = np.load("cva_J.npy")
 L = np.load("cva_L.npy")
-T2_UCL = THR["T2_UCL"]
-Q_UCL = THR["Q_UCL"]
-RESID_UCLS = {k: v["resid_ucl"] for k, v in THR["per_target"].items()}
+T2_UCL = float(THR["T2_UCL"])
+Q_UCL = float(THR["Q_UCL"])
+RESID_UCLS = {k: float(v["resid_ucl"]) for k, v in THR["per_target"].items()}
 
-# Small inference-only LSTM to match training config
+TARGETS  = CFG["targets"]           # e.g. ["PT501"]
+FEATURES = CFG["features"]          # inputs only (target excluded)
+ALL_COLS = CFG["all_cols"]
+WINDOW   = int(CFG["window"])
+HORIZON  = int(CFG["horizon"])
+HIDDEN   = int(CFG["hidden_size"])
+P_LAGS   = int(CFG["p_lags"])
+F_LAGS   = int(CFG["f_lags"])
+
+# ---------- Inference-only LSTM ----------
 class LSTMModel(torch.nn.Module):
     def __init__(self, input_size, output_size, hidden_size=64, num_layers=1):
         super().__init__()
@@ -40,9 +50,9 @@ class LSTMModel(torch.nn.Module):
         return self.fc(y)
 
 MODEL = LSTMModel(
-    input_size=len(CFG["features"]),
-    output_size=len(CFG["targets"]),
-    hidden_size=CFG["hidden_size"]
+    input_size=len(FEATURES),
+    output_size=len(TARGETS),
+    hidden_size=HIDDEN
 )
 MODEL.load_state_dict(torch.load("model.pt", map_location="cpu"))
 MODEL.eval()
@@ -66,9 +76,7 @@ def build_pf_blocks(X, p, f):
         Yf[:, k] = fut.reshape(-1)
     return Yp, Yf
 
-# ---------- API ----------
-app = FastAPI(title="Soft Sensing API", version="1.0.0")
-
+# ---------- Helpers to read CSV safely ----------
 def is_numbering_row(values, n_expected):
     """
     True if row looks like 1..n (accepts '1', '1.', '1)', with spaces).
@@ -85,47 +93,105 @@ def is_numbering_row(values, n_expected):
         nums.append(int(m.group(1)))
     return nums == list(range(1, n_expected + 1))
 
-def read_ordered_csv_assign_names(file_bytes: bytes, expected_cols: list[str]) -> pd.DataFrame:
+def read_ordered_csv_assign_names(file_bytes: bytes, expected_cols: list[str], targets: list[str], features: list[str]) -> pd.DataFrame:
     """
-    Read a CSV where users guarantee column order.
-    - Treat file as headerless.
-    - If first row is numbering (1..n), drop it.
-    - Assign expected column names.
-    - Coerce to numeric and simple NaN fills.
-    """
-    n_expected = len(expected_cols)
+    Accept CSVs in any of these formats:
+      A) No header (pure data rows)
+      B) First row is numbering "1..n" (e.g., 1,2,...,24)
+      C) First row is a named header that matches expected_cols
+      D) First row is numbering, second row is named header
 
-    # Read raw (no header)
+    Logic:
+      - Always read with header=None (so we keep all rows).
+      - If first row is numbering -> drop it.
+      - Then, if (new) first row matches expected_cols -> drop it too.
+      - Trim/validate column count.
+      - Assign expected_cols as final names.
+      - Coerce numeric; ONLY impute inputs (features); leave targets as-is.
+    """
+    import pandas as pd
+    import numpy as np
+    import re
+
+    n_expected = len(expected_cols)
     df = pd.read_csv(io.BytesIO(file_bytes), header=None)
 
-    # Validate column count early
-    if df.shape[1] != n_expected:
+    # If there are more columns than expected, trim; if fewer, error
+    if df.shape[1] < n_expected:
         raise HTTPException(
             status_code=400,
             detail=f"CSV has {df.shape[1]} columns but expected {n_expected}. "
                    f"Please export with exactly {n_expected} columns in the correct order."
         )
+    if df.shape[1] > n_expected:
+        df = df.iloc[:, :n_expected]
 
-    # If first row is numbering 1..n → drop it
-    first_row_vals = df.iloc[0].tolist()
-    if is_numbering_row(first_row_vals, n_expected):
+    def is_numbering_row(values, n_expected):
+        pat = re.compile(r'^\s*(\d+)\s*[\.\)]?\s*$')
+        nums = []
+        for v in values:
+            s = str(v).strip()
+            m = pat.match(s)
+            if not m:
+                return False
+            nums.append(int(m.group(1)))
+        return nums == list(range(1, n_expected + 1))
+
+    def normalize_tokens(vs):
+        return [str(v).strip() for v in vs]
+
+    def is_expected_header_row(values, expected):
+        vals = normalize_tokens(values)
+        exp  = [str(x).strip() for x in expected]
+        return vals == exp
+
+    # --- Drop first line if numbering 1..n ---
+    if len(df) > 0 and is_numbering_row(df.iloc[0].tolist(), n_expected):
         df = df.iloc[1:].reset_index(drop=True)
 
-    # Assign names & clean
-    df.columns = expected_cols
-    df = df.apply(pd.to_numeric, errors="coerce").fillna(method="ffill").fillna(method="bfill")
+    # --- Drop next line if it matches expected header names exactly ---
+    if len(df) > 0 and is_expected_header_row(df.iloc[0].tolist(), expected_cols):
+        df = df.iloc[1:].reset_index(drop=True)
 
-    # Final sanity: need at least window+horizon rows
+    # Final sanity after possible drops
+    if df.empty:
+        raise HTTPException(status_code=400, detail="CSV has no data rows after removing header/numbering lines.")
+
+    # Assign final schema
+    df.columns = expected_cols
+
+    # Coerce numeric everywhere (targets may become NaN if blank)
+    for c in expected_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Impute ONLY inputs; leave targets untouched
+    df[features] = df[features].replace([np.inf, -np.inf], np.nan)
+    df[features] = df[features].fillna(method="ffill").fillna(method="bfill")
+
+    # Ensure inputs are clean
+    if df[features].isna().any().any():
+        raise HTTPException(status_code=400, detail="Missing values remain in input features after ffill/bfill.")
+
     return df
 
-# Allow your frontend origin(s)
+
+# ---------- API ----------
+app = FastAPI(title="Soft Sensing API", version="1.0.0")
+
+# CORS to allow your front-end (adjust for prod domain)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5500", "http://localhost:5500","https://fyp-website-xkq5.onrender.com"],        # change to ["https://yourdomain.com"] in prod
+    allow_origins=[
+        "http://127.0.0.1:5500", "http://localhost:5500",
+        "http://127.0.0.1:3000", "http://localhost:3000",
+        "https://fyp-website-xkq5.onrender.com"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+LAST_RESULT = None  # optional cache for /report/pdf
 
 class PredictResponse(BaseModel):
     targets: list[str]
@@ -139,81 +205,86 @@ class PredictResponse(BaseModel):
 
 @app.post("/predict", response_model=PredictResponse)
 async def predict(file: UploadFile = File(...)):
-    # Read CSV into DataFrame
-    # Read CSV (order-guaranteed, headerless or with numbering row)
+    global LAST_RESULT
+
+    # 1) Read CSV with strict schema; only impute inputs
     try:
         content = await file.read()
-        df = read_ordered_csv_assign_names(content, CFG["all_cols"])
+        df = read_ordered_csv_assign_names(content, ALL_COLS, TARGETS, FEATURES)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}")
 
-    # Validate / align columns
-    missing = [c for c in CFG["all_cols"] if c not in df.columns]
-    if missing:
-        raise HTTPException(status_code=400, detail=f"Missing required columns: {missing}")
-    df = df[CFG["all_cols"]].apply(pd.to_numeric, errors="coerce").fillna(method="ffill").fillna(method="bfill")
+    # 2) Prepare inputs (features only)
+    X = SCALER_X.transform(df[FEATURES].values)
 
-    # Inputs
-    X = SCALER_X.transform(df[CFG["features"]].values)
-
-    # Sequence for LSTM
-    W, H = CFG["window"], CFG["horizon"]
-    X_seq = make_sequences_X(X, W, H)
+    # 3) Sequences for LSTM
+    X_seq = make_sequences_X(X, WINDOW, HORIZON)
     if X_seq.size == 0:
-        raise HTTPException(status_code=400, detail="Not enough rows for the configured window/horizon.")
+        raise HTTPException(status_code=400, detail=f"Not enough rows for window={WINDOW}, horizon={HORIZON}.")
 
+    # 4) Predict target(s)
     with torch.no_grad():
-        y_pred_std = MODEL(torch.tensor(X_seq, dtype=torch.float32)).cpu().numpy()
-    y_pred = SCALER_Y.inverse_transform(y_pred_std)  # (N, T)
+        y_pred_std = MODEL(torch.tensor(X_seq, dtype=torch.float32)).cpu().numpy()  # (N, len(TARGETS))
+    y_pred = SCALER_Y.inverse_transform(y_pred_std)
 
-    # If CSV also contains true target columns, compute residuals/metrics
-    has_truth = set(CFG["targets"]).issubset(df.columns)
+    # 5) Ground truth handling (ONLY if target column has real values)
+    #    'has_truth' is true only if the target column exists and has at least some non-NaN values.
     y_true_seq = None
     resid = None
     metrics = None
+    has_truth_col = all(t in df.columns for t in TARGETS)
+    if has_truth_col:
+        y_full = df[TARGETS].values
+        # If ALL values are NaN, treat as no truth
+        if not np.isnan(y_full).all():
+            # Build aligned y_true for sequence outputs
+            seq_truth = []
+            T = len(y_full)
+            for i in range(T - WINDOW - HORIZON + 1):
+                seq_truth.append(y_full[i + WINDOW + HORIZON - 1])
+            y_true_seq = np.array(seq_truth)  # (N, len(TARGETS))
 
-    if has_truth:
-        y_full = df[CFG["targets"]].values
-        y_true_seq = []
-        T = len(y_full)
-        for i in range(T - W - H + 1):
-            y_true_seq.append(y_full[i+W+H-1])
-        y_true_seq = np.array(y_true_seq)
-        resid = np.abs(y_true_seq - y_pred)
+            # Filter if any NaNs accidentally slipped in
+            if np.isnan(y_true_seq).any():
+                # drop rows with NaNs in truth to compute metrics cleanly
+                mask = ~np.isnan(y_true_seq).any(axis=1)
+                y_true_seq = y_true_seq[mask]
+                y_pred = y_pred[mask]
 
-        # Per-target metrics
-        metrics = {}
-        for j, name in enumerate(CFG["targets"]):
-            yj = y_true_seq[:, j]; yhat = y_pred[:, j]
-            rmse = float(np.sqrt(np.mean((yj - yhat)**2)))
-            mae  = float(np.mean(np.abs(yj - yhat)))
-            ss_res = float(np.sum((yj - yhat)**2))
-            ss_tot = float(np.sum((yj - np.mean(yj))**2))
-            r2 = float(1 - ss_res/ss_tot) if ss_tot > 0 else float("nan")
-            metrics[name] = {"rmse": rmse, "mae": mae, "r2": r2}
+            # Residuals & metrics
+            resid = np.abs(y_true_seq - y_pred)
+            metrics = {}
+            for j, name in enumerate(TARGETS):
+                yj = y_true_seq[:, j]; yhat = y_pred[:, j]
+                rmse = float(np.sqrt(np.mean((yj - yhat) ** 2)))
+                mae  = float(np.mean(np.abs(yj - yhat)))
+                ss_res = float(np.sum((yj - yhat) ** 2))
+                ss_tot = float(np.sum((yj - np.mean(yj)) ** 2))
+                r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+                metrics[name] = {"rmse": rmse, "mae": mae, "r2": r2}
 
-    # CVA on inputs
-    p, f = CFG["p_lags"], CFG["f_lags"]
-    Yp_te, _ = build_pf_blocks(X, p, f)
+    # 6) CVA on inputs (scaled)
+    Yp_te, _ = build_pf_blocks(X, P_LAGS, F_LAGS)
     if Yp_te.shape[1] > 0:
         Z = J @ Yp_te
         E = L @ Yp_te
-        T2 = np.sum(Z*Z, axis=0)
-        Q  = np.sum(E*E, axis=0)
+        T2 = np.sum(Z * Z, axis=0)
+        Q  = np.sum(E * E, axis=0)
         breach_rate = float(np.mean((T2 > T2_UCL) | (Q > Q_UCL)))
         t_cva = list(range(len(T2)))
-        cva = {"t": t_cva, "T2": T2.tolist(), "Q": Q.tolist(),
-               "T2_UCL": float(T2_UCL), "Q_UCL": float(Q_UCL),
-               "breach_rate": breach_rate}
+        cva = {
+            "t": t_cva, "T2": T2.tolist(), "Q": Q.tolist(),
+            "T2_UCL": T2_UCL, "Q_UCL": Q_UCL, "breach_rate": breach_rate
+        }
     else:
-        cva = {"t": [], "T2": [], "Q": [], "T2_UCL": float(T2_UCL), "Q_UCL": float(Q_UCL), "breach_rate": 0.0}
+        cva = {"t": [], "T2": [], "Q": [], "T2_UCL": T2_UCL, "Q_UCL": Q_UCL, "breach_rate": 0.0}
 
-    # Build response
-    t = list(range(len(y_pred)))  # time index for seq outputs
-    return {
-        "targets": CFG["targets"],
+    # 7) Build response (sequence output length)
+    t = list(range(len(y_pred)))  # if each row = 1 second, you can convert to timestamps in frontend
+    result = {
+        "targets": TARGETS,
         "time_index": t,
         "y_pred": y_pred.tolist(),
         "y_true": None if y_true_seq is None else y_true_seq.tolist(),
@@ -222,3 +293,15 @@ async def predict(file: UploadFile = File(...)):
         "metrics": metrics,
         "cva": cva
     }
+    LAST_RESULT = result
+    return JSONResponse(result)
+
+# ---------- Optional: on-demand PDF report ----------
+@app.post("/report/pdf")
+def make_report(shap: dict | None = Body(default=None)):
+    global LAST_RESULT
+    if LAST_RESULT is None:
+        return Response(content="No prediction result available. Run /predict first.", status_code=400)
+    pdf_bytes = build_pdf_from_result(LAST_RESULT, shap_importance=shap, target=TARGETS[0] if TARGETS else "TARGET")
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                    headers={"Content-Disposition": 'attachment; filename="softsensor_report.pdf"'})
