@@ -93,82 +93,88 @@ def is_numbering_row(values, n_expected):
         nums.append(int(m.group(1)))
     return nums == list(range(1, n_expected + 1))
 
-def read_ordered_csv_assign_names(file_bytes: bytes, expected_cols: list[str], targets: list[str], features: list[str]) -> pd.DataFrame:
+def read_ordered_csv_assign_names(
+    file_bytes: bytes,
+    expected_cols: list[str],
+    targets: list[str],
+    features: list[str],
+) -> pd.DataFrame:
     """
-    Accept CSVs in any of these formats:
-      A) No header (pure data rows)
-      B) First row is numbering "1..n" (e.g., 1,2,...,24)
-      C) First row is a named header that matches expected_cols
-      D) First row is numbering, second row is named header
+    Accept CSVs in formats:
+      A) No header
+      B) First row is numbering 1..n (or 0..n-1), e.g. 1,2,3,...,24 (also '1.' or '1)')
+      C) First row exactly equals expected column names
+      D) Numbering row then expected header row
 
-    Logic:
-      - Always read with header=None (so we keep all rows).
-      - If first row is numbering -> drop it.
-      - Then, if (new) first row matches expected_cols -> drop it too.
-      - Trim/validate column count.
-      - Assign expected_cols as final names.
-      - Coerce numeric; ONLY impute inputs (features); leave targets as-is.
+    Steps:
+      - Read with header=None (keep all rows)
+      - Sniff delimiter
+      - If first row is numbering -> drop it
+      - If (new) first row matches expected header -> drop it
+      - Trim to expected column count and assign names
+      - Coerce numeric; ONLY impute inputs; leave targets as-is (can be blank)
     """
-    import pandas as pd
-    import numpy as np
     import re
+    # --- 1) Read with delimiter sniffing ---
+    df = pd.read_csv(io.BytesIO(file_bytes), header=None, engine="python", sep=None)
 
     n_expected = len(expected_cols)
-    df = pd.read_csv(io.BytesIO(file_bytes), header=None)
 
-    # If there are more columns than expected, trim; if fewer, error
+    # --- 2) Trim/validate column count ---
     if df.shape[1] < n_expected:
         raise HTTPException(
             status_code=400,
             detail=f"CSV has {df.shape[1]} columns but expected {n_expected}. "
-                   f"Please export with exactly {n_expected} columns in the correct order."
+                   f"Please export exactly {n_expected} columns in the trained order."
         )
     if df.shape[1] > n_expected:
         df = df.iloc[:, :n_expected]
 
+    # --- helpers ---
+    def _clean_token(s):
+        return str(s).replace("\ufeff", "").strip()  # strip BOM + spaces
+
+    def _row_tokens(row):
+        return [_clean_token(v) for v in row.tolist()]
+
     def is_numbering_row(values, n_expected):
-        pat = re.compile(r'^\s*(\d+)\s*[\.\)]?\s*$')
-        nums = []
-        for v in values:
-            s = str(v).strip()
-            m = pat.match(s)
+        """True if values equal 1..n or 0..n-1 (allow '1', '1.', '1)', '1.0')."""
+        toks = [_clean_token(v) for v in values]
+        ints = []
+        for t in toks:
+            m = re.match(r"^(\d+)(?:\.0+)?\s*[\.\)]?$", t)  # 1, 1., 1), 1.0
             if not m:
                 return False
-            nums.append(int(m.group(1)))
-        return nums == list(range(1, n_expected + 1))
-
-    def normalize_tokens(vs):
-        return [str(v).strip() for v in vs]
+            ints.append(int(m.group(1)))
+        return (ints == list(range(1, n_expected + 1))) or (ints == list(range(0, n_expected)))
 
     def is_expected_header_row(values, expected):
-        vals = normalize_tokens(values)
+        toks = [_clean_token(v) for v in values]
         exp  = [str(x).strip() for x in expected]
-        return vals == exp
+        return toks == exp
 
-    # --- Drop first line if numbering 1..n ---
-    if len(df) > 0 and is_numbering_row(df.iloc[0].tolist(), n_expected):
+    # --- 3) Drop numbered header if present ---
+    if len(df) > 0 and is_numbering_row(df.iloc[0].values, n_expected):
         df = df.iloc[1:].reset_index(drop=True)
 
-    # --- Drop next line if it matches expected header names exactly ---
-    if len(df) > 0 and is_expected_header_row(df.iloc[0].tolist(), expected_cols):
+    # --- 4) Drop named header if present (after possible numbering drop) ---
+    if len(df) > 0 and is_expected_header_row(df.iloc[0].values, expected_cols):
         df = df.iloc[1:].reset_index(drop=True)
 
-    # Final sanity after possible drops
     if df.empty:
-        raise HTTPException(status_code=400, detail="CSV has no data rows after removing header/numbering lines.")
+        raise HTTPException(status_code=400, detail="CSV has no data rows after removing header/numbering line(s).")
 
-    # Assign final schema
+    # --- 5) Assign schema ---
     df.columns = expected_cols
 
-    # Coerce numeric everywhere (targets may become NaN if blank)
+    # --- 6) Coerce numeric everywhere (targets may become NaN; that’s OK) ---
     for c in expected_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Impute ONLY inputs; leave targets untouched
+    # --- 7) Impute ONLY inputs; leave targets untouched ---
     df[features] = df[features].replace([np.inf, -np.inf], np.nan)
     df[features] = df[features].fillna(method="ffill").fillna(method="bfill")
 
-    # Ensure inputs are clean
     if df[features].isna().any().any():
         raise HTTPException(status_code=400, detail="Missing values remain in input features after ffill/bfill.")
 
