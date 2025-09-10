@@ -1,13 +1,16 @@
 # server.py
-import json, io
+import json, io, os
 import numpy as np
 import pandas as pd
 import torch
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException,Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import joblib
 import re, io
+from fastapi.responses import Response
+
+from report_generator import build_pdf_from_result
 
 # ---------- Load artifacts at startup ----------
 with open("config.json") as f: CFG = json.load(f)
@@ -118,7 +121,7 @@ def read_ordered_csv_assign_names(file_bytes: bytes, expected_cols: list[str]) -
 # Allow your frontend origin(s)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5500", "http://localhost:5500"],        # change to ["https://yourdomain.com"] in prod
+    allow_origins=["http://127.0.0.1:5500", "http://localhost:5500","https://fyp-website-xkq5.onrender.com"],        # change to ["https://yourdomain.com"] in prod
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
