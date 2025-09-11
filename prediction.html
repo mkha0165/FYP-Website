@@ -8,14 +8,18 @@
 </head>
 <body class="min-h-screen bg-gray-900 text-white p-6">
   <div class="max-w-6xl mx-auto">
-    <h1 class="text-2xl font-bold mb-4">Prediction Results (PT501)</h1>
+    <h1 class="text-2xl font-bold mb-4">Prediction Results (PT501 - Pressure in 3 Phase Separator (MPA))</h1>
 
     <div id="meta" class="mb-6 text-sm text-gray-300"></div>
 
     <div id="plot-preds" class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[500px]"></div>
     <div id="plot-cva"   class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[600px]"></div>
     <div id="plot-shap" class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[500px]"></div>
-
+    
+    <button id="btnReport"
+    class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded">
+    Download PDF Report
+    </button>
   </div>
 
   <script>
@@ -41,7 +45,7 @@
     // === Meta info ===
     const meta = document.getElementById("meta");
     meta.innerHTML = `
-      <div>Target variable: <code>${targetName}</code></div>
+      <div>Target variable: <code>${targetName}</code>  (MPa) </div>
       ${hasTruth ? "" : "<div class='text-yellow-400 mt-1'>No ground-truth values — predictions only.</div>"}
     `;
 
