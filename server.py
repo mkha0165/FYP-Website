@@ -193,9 +193,12 @@ app = FastAPI(title="Soft Sensing API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://127.0.0.1:5500", "http://localhost:5500",
-        "http://127.0.0.1:3000", "http://localhost:3000",
-        "https://fyp-website-xkq5.onrender.com"
+        "http://127.0.0.1:5500",
+        "http://localhost:5500",
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+        "https://fyp-website-xkq5.onrender.com",  # frontend
+        "https://fyp-website-3.onrender.com",     # backend (needed for some browsers)
     ],
     allow_credentials=True,
     allow_methods=["*"],
