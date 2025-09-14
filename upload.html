@@ -73,13 +73,15 @@
     const uploadStatus = document.getElementById("uploadStatus");
 
     // ===== API config =====
-    const API_URL = "http://127.0.0.1:8000/predict"; // <- change to your server URL in prod
+    const ML_API_BASE_URL = window.location.hostname === "localhost"
+      ? "http://127.0.0.1:8000"
+      : "https://fyp-website-3.onrender.com";  // FastAPI on Render
+    const API_URL = `${ML_API_BASE_URL}/predict`;
 
     async function postFileToAPI(file) {
       const formData = new FormData();
       formData.append("file", file);
 
-      // Simple status message
       uploadStatus.innerHTML = `<span class="text-gray-200">Uploading <strong>${file.name}</strong></span>`;
       browseBtn.disabled = true;
       dropZone.classList.add("pointer-events-none", "opacity-60");
@@ -104,10 +106,8 @@
       }
       try {
         const result = await postFileToAPI(file);
-        uploadStatus.innerHTML = `<span class="text-green-400 font-semibold">${file.name} processed successfully. Redirecting</span>`;
-        // Save API JSON for next page
+        uploadStatus.innerHTML = `<span class="text-green-400 font-semibold">${file.name} processed successfully. Redirecting...</span>`;
         sessionStorage.setItem("predictionResult", JSON.stringify(result));
-        // Go to prediction page
         window.location.href = "prediction.html";
       } catch (err) {
         uploadStatus.innerHTML = `<div class="text-red-400 mt-2 break-words">Error: ${err.message}</div>`;

@@ -3,15 +3,19 @@
   Features:
     - Form switching (login <-> signup).
     - Input validation and error messages.
-    - Sends requests to backend (server.js) for signup/login.
+    - Sends requests to backend (server.js) for signup/login/reset.
     - Stores login state in localStorage for authentication.
 */
 
 /* --- CONFIG --- */
-// Automatically switch between local and deployed backend
-const API_BASE_URL = window.location.hostname === "localhost"
+// Split API URLs for auth vs ML
+const AUTH_API_BASE_URL = window.location.hostname === "localhost"
     ? "http://localhost:5000"
-    : "https://fyp-website-xkq5.onrender.com"; 
+    : "https://fyp-website-xkq5.onrender.com";   // Node.js
+
+const ML_API_BASE_URL = window.location.hostname === "localhost"
+    ? "http://localhost:8000"
+    : "https://fyp-website-3.onrender.com";      // FastAPI
 
 /* --- FORM UTILITIES --- */
 function setFormMessage(formElement, type, message) {
@@ -42,6 +46,7 @@ function validateUsername(username) {
 document.addEventListener("DOMContentLoaded", () => {
     const loginForm = document.querySelector('#login');
     const createAccountForm = document.querySelector('#createAccount');
+    const resetPasswordForm = document.querySelector('#resetPassword');
 
     // Toggle login/signup
     document.querySelector("#linkCreateAccount").addEventListener("click", e => {
@@ -56,62 +61,59 @@ document.addEventListener("DOMContentLoaded", () => {
         createAccountForm.classList.add("form--hidden");
     });
 
-    const resetPasswordForm = document.querySelector('#resetPassword');
+    // Show reset form
+    document.querySelector(".form__link").addEventListener("click", e => {
+        e.preventDefault();
+        loginForm.classList.add("form--hidden");
+        resetPasswordForm.classList.remove("form--hidden");
+    });
 
-// Show reset form
-document.querySelector(".form__link").addEventListener("click", e => {
-    e.preventDefault();
-    loginForm.classList.add("form--hidden");
-    resetPasswordForm.classList.remove("form--hidden");
-});
+    // Back to login
+    document.querySelector("#linkBackLogin").addEventListener("click", e => {
+        e.preventDefault();
+        resetPasswordForm.classList.add("form--hidden");
+        loginForm.classList.remove("form--hidden");
+    });
 
-// Back to login
-document.querySelector("#linkBackLogin").addEventListener("click", e => {
-    e.preventDefault();
-    resetPasswordForm.classList.add("form--hidden");
-    loginForm.classList.remove("form--hidden");
-});
+    // Handle reset form submit
+    resetPasswordForm.addEventListener("submit", async (e) => {
+        e.preventDefault();
 
-// Handle reset form submit
-resetPasswordForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
+        const identifier = document.querySelector("#resetIdentifier").value.trim();
+        const newPassword = document.querySelector("#resetNewPassword").value.trim();
+        const confirmPassword = document.querySelector("#resetConfirmPassword").value.trim();
 
-    const identifier = document.querySelector("#resetIdentifier").value.trim();
-    const newPassword = document.querySelector("#resetNewPassword").value.trim();
-    const confirmPassword = document.querySelector("#resetConfirmPassword").value.trim();
-
-    if (!identifier || !newPassword || !confirmPassword) {
-        setFormMessage(resetPasswordForm, "error", "Please fill in all fields");
-        return;
-    }
-    if (newPassword !== confirmPassword) {
-        setFormMessage(resetPasswordForm, "error", "Passwords do not match");
-        return;
-    }
-
-    try {
-        const res = await fetch(`${API_BASE_URL}/reset-password`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ identifier, newPassword })
-        });
-
-        const data = await res.json();
-        if (res.ok) {
-            setFormMessage(resetPasswordForm, "success", data.message);
-            setTimeout(() => {
-                resetPasswordForm.classList.add("form--hidden");
-                loginForm.classList.remove("form--hidden");
-            }, 1500);
-        } else {
-            setFormMessage(resetPasswordForm, "error", data.error || "Reset failed");
+        if (!identifier || !newPassword || !confirmPassword) {
+            setFormMessage(resetPasswordForm, "error", "Please fill in all fields");
+            return;
         }
-    } catch (err) {
-        console.error(err);
-        setFormMessage(resetPasswordForm, "error", "Server error. Please try again.");
-    }
-});
+        if (newPassword !== confirmPassword) {
+            setFormMessage(resetPasswordForm, "error", "Passwords do not match");
+            return;
+        }
 
+        try {
+            const res = await fetch(`${AUTH_API_BASE_URL}/reset-password`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ identifier, newPassword })
+            });
+
+            const data = await res.json();
+            if (res.ok) {
+                setFormMessage(resetPasswordForm, "success", data.message);
+                setTimeout(() => {
+                    resetPasswordForm.classList.add("form--hidden");
+                    loginForm.classList.remove("form--hidden");
+                }, 1500);
+            } else {
+                setFormMessage(resetPasswordForm, "error", data.error || "Reset failed");
+            }
+        } catch (err) {
+            console.error(err);
+            setFormMessage(resetPasswordForm, "error", "Server error. Please try again.");
+        }
+    });
 
     // Login Form
     loginForm.addEventListener("submit", async (e) => {
@@ -126,7 +128,7 @@ resetPasswordForm.addEventListener("submit", async (e) => {
         }
 
         try {
-            const res = await fetch(`${API_BASE_URL}/login`, {
+            const res = await fetch(`${AUTH_API_BASE_URL}/login`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ identifier, password })
@@ -215,7 +217,7 @@ resetPasswordForm.addEventListener("submit", async (e) => {
         }
 
         try {
-            const res = await fetch(`${API_BASE_URL}/signup`, {
+            const res = await fetch(`${AUTH_API_BASE_URL}/signup`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ username, email, password })
