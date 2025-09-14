@@ -1,2 +1,10 @@
 fastapi
-uvicorn[standard]
+uvicorn
+shap
+scikit-learn
+pandas
+joblib
+python-multipart
+reportlab
+numpy
+seaborn
