@@ -23,23 +23,22 @@ document.addEventListener("DOMContentLoaded", () => {
         formData.append("file", fileInput.files[0]);
 
         try {
-            const res = await fetch(`${ML_API_BASE_URL}/upload`, {
+            const res = await fetch(`${ML_API_BASE_URL}/predict`, {  // <-- FIXED
                 method: "POST",
                 body: formData
             });
 
-            if (!res.ok) {
-                throw new Error("Upload failed");
-            }
+        if (!res.ok) {
+            throw new Error(await res.text());
+        }
 
-            const data = await res.json();
-            console.log("ML API response:", data);
+        const data = await res.json();
+        console.log("ML API response:", data);
 
-            // Example: render results
-            resultContainer.innerHTML = `
-                <h3>Analysis Results</h3>
-                <pre>${JSON.stringify(data, null, 2)}</pre>
-            `;
+        resultContainer.innerHTML = `
+            <h3>Analysis Results</h3>
+            <pre>${JSON.stringify(data, null, 2)}</pre>
+        `;
         } catch (err) {
             console.error(err);
             resultContainer.innerHTML = `<p style="color:red;">Error: ${err.message}</p>`;
