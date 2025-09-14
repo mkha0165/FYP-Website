@@ -80,7 +80,7 @@
       formData.append("file", file);
 
       // Simple status message
-      uploadStatus.innerHTML = `<span class="text-gray-200">Uploading <strong>${file.name}</strong>…</span>`;
+      uploadStatus.innerHTML = `<span class="text-gray-200">Uploading <strong>${file.name}</strong></span>`;
       browseBtn.disabled = true;
       dropZone.classList.add("pointer-events-none", "opacity-60");
 
@@ -104,7 +104,7 @@
       }
       try {
         const result = await postFileToAPI(file);
-        uploadStatus.innerHTML = `<span class="text-green-400 font-semibold">${file.name} processed successfully. Redirecting…</span>`;
+        uploadStatus.innerHTML = `<span class="text-green-400 font-semibold">${file.name} processed successfully. Redirecting</span>`;
         // Save API JSON for next page
         sessionStorage.setItem("predictionResult", JSON.stringify(result));
         // Go to prediction page

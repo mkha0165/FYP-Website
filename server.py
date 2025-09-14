@@ -9,7 +9,12 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 import joblib
 
-from report_generator import build_pdf_from_result
+app = FastAPI()
+
+@app.get("/")
+def read_root():
+    return {"message": "Hello! Your API is running"}
+
 
 # ---------- Load artifacts at startup ----------
 with open("config.json") as f:
@@ -167,7 +172,7 @@ def read_ordered_csv_assign_names(
     # --- 5) Assign schema ---
     df.columns = expected_cols
 
-    # --- 6) Coerce numeric everywhere (targets may become NaN; that’s OK) ---
+    # --- 6) Coerce numeric everywhere (targets may become NaN; thats OK) ---
     for c in expected_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
@@ -307,7 +312,14 @@ async def predict(file: UploadFile = File(...)):
 def make_report(shap: dict | None = Body(default=None)):
     global LAST_RESULT
     if LAST_RESULT is None:
-        return Response(content="No prediction result available. Run /predict first.", status_code=400)
-    pdf_bytes = build_pdf_from_result(LAST_RESULT, shap_importance=shap, target=TARGETS[0] if TARGETS else "TARGET")
-    return Response(content=pdf_bytes, media_type="application/pdf",
-                    headers={"Content-Disposition": 'attachment; filename="softsensor_report.pdf"'})
+        return Response(
+            content="No prediction result available. Run /predict first.",
+            status_code=400
+        )
+
+    # PDF generation removed (report_generator not available)
+    # Instead, return the last result as JSON or an error
+    return JSONResponse({
+        "message": "PDF generation not implemented (report_generator missing).",
+        "last_result": LAST_RESULT
+    })

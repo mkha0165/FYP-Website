@@ -177,4 +177,4 @@ with open("config.json", "w") as f:
         "f_lags": f_lags
     }, f, indent=2)
 
-print("✅ Saved: model.pt, scalerX.pkl, scalery.pkl, cva_J.npy, cva_L.npy, thresholds.json, config.json")
+print("Saved: model.pt, scalerX.pkl, scalery.pkl, cva_J.npy, cva_L.npy, thresholds.json, config.json")

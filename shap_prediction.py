@@ -102,7 +102,7 @@ with open("shap_importance_pt501.json", "w") as f:
         "feature_importance": feat_scores
     }, f, indent=2)
 
-print("✅ Saved shap_importance_pt501.json")
+print("Saved shap_importance_pt501.json")
 # Optional: also save raw SHAP for a few eval sequences (for waterfall/heatmaps)
 np.save("shap_values_eval.npy", shap_vals)     # (Ne, T, m)
 np.save("eval_sequences.npy", X_ev[:Ne])       # (Ne, T, m)
