@@ -9,3 +9,4 @@ reportlab
 numpy
 seaborn
 torch
+report_generator
