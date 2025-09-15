@@ -9,12 +9,6 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 import joblib
 
-app = FastAPI()
-
-@app.get("/")
-def read_root():
-    return {"message": "Hello! Your API is running"}
-
 
 # ---------- Load artifacts at startup ----------
 with open("config.json") as f:
@@ -189,6 +183,10 @@ def read_ordered_csv_assign_names(
 # ---------- API ----------
 app = FastAPI(title="Soft Sensing API", version="1.0.0")
 
+@app.get("/")
+def read_root():
+    return {"message": "Hello! Your API is running"}
+
 # CORS to allow your front-end (adjust for prod domain)
 app.add_middleware(
     CORSMiddleware,
@@ -197,7 +195,7 @@ app.add_middleware(
         "http://localhost:5500",
         "http://127.0.0.1:3000",
         "http://localhost:3000",
-        "https://fyp-website-xkq5.onrender.com",  # frontend
+        "https://fyp-website-2.onrender.com",  # frontend
     ],
     allow_credentials=True,
     allow_methods=["*"],
