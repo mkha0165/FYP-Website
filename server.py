@@ -214,33 +214,92 @@ class PredictResponse(BaseModel):
     metrics: dict[str, dict] | None
     cva: dict
 
-@app.post("/predict")
+@app.post("/predict", response_model=PredictResponse)
 async def predict(file: UploadFile = File(...)):
-    try:
-        # Log file info
-        print(f"Received file: {file.filename}, content type: {file.content_type}")
-        
-        # Read CSV
-        contents = await file.read()
-        print(f"File size: {len(contents)} bytes")
-        
-        import io
-        df = pd.read_csv(io.BytesIO(contents))
-        print(f"CSV loaded, shape: {df.shape}")
-        
-        # Dummy prediction logic (replace with your real model)
-        predictions = df.head(5).to_dict(orient="records")  # just a sample
+    global LAST_RESULT
 
-        return {"predictions": predictions}
-    
+    # 1) Read CSV with strict schema; only impute inputs
+    try:
+        content = await file.read()
+        df = read_ordered_csv_assign_names(content, ALL_COLS, TARGETS, FEATURES)
+    except HTTPException:
+        raise
     except Exception as e:
-        # Catch all errors and log
-        print("Exception in /predict endpoint:")
-        traceback.print_exc()
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e), "trace": traceback.format_exc()}
-        )
+        raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}")
+
+    # 2) Prepare inputs (features only)
+    X = SCALER_X.transform(df[FEATURES].values)
+
+    # 3) Sequences for LSTM
+    X_seq = make_sequences_X(X, WINDOW, HORIZON)
+    if X_seq.size == 0:
+        raise HTTPException(status_code=400, detail=f"Not enough rows for window={WINDOW}, horizon={HORIZON}.")
+
+    # 4) Predict target(s)
+    with torch.no_grad():
+        y_pred_std = MODEL(torch.tensor(X_seq, dtype=torch.float32)).cpu().numpy()  # (N, len(TARGETS))
+    y_pred = SCALER_Y.inverse_transform(y_pred_std)
+
+    # 5) Ground truth handling (ONLY if target column has real values)
+    y_true_seq = None
+    resid = None
+    metrics = None
+    has_truth_col = all(t in df.columns for t in TARGETS)
+    if has_truth_col:
+        y_full = df[TARGETS].values
+        if not np.isnan(y_full).all():
+            seq_truth = []
+            T = len(y_full)
+            for i in range(T - WINDOW - HORIZON + 1):
+                seq_truth.append(y_full[i + WINDOW + HORIZON - 1])
+            y_true_seq = np.array(seq_truth)
+
+            if np.isnan(y_true_seq).any():
+                mask = ~np.isnan(y_true_seq).any(axis=1)
+                y_true_seq = y_true_seq[mask]
+                y_pred = y_pred[mask]
+
+            resid = np.abs(y_true_seq - y_pred)
+            metrics = {}
+            for j, name in enumerate(TARGETS):
+                yj = y_true_seq[:, j]; yhat = y_pred[:, j]
+                rmse = float(np.sqrt(np.mean((yj - yhat) ** 2)))
+                mae  = float(np.mean(np.abs(yj - yhat)))
+                ss_res = float(np.sum((yj - yhat) ** 2))
+                ss_tot = float(np.sum((yj - np.mean(yj)) ** 2))
+                r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+                metrics[name] = {"rmse": rmse, "mae": mae, "r2": r2}
+
+    # 6) CVA on inputs (scaled)
+    Yp_te, _ = build_pf_blocks(X, P_LAGS, F_LAGS)
+    if Yp_te.shape[1] > 0:
+        Z = J @ Yp_te
+        E = L @ Yp_te
+        T2 = np.sum(Z * Z, axis=0)
+        Q  = np.sum(E * E, axis=0)
+        breach_rate = float(np.mean((T2 > T2_UCL) | (Q > Q_UCL)))
+        t_cva = list(range(len(T2)))
+        cva = {
+            "t": t_cva, "T2": T2.tolist(), "Q": Q.tolist(),
+            "T2_UCL": T2_UCL, "Q_UCL": Q_UCL, "breach_rate": breach_rate
+        }
+    else:
+        cva = {"t": [], "T2": [], "Q": [], "T2_UCL": T2_UCL, "Q_UCL": Q_UCL, "breach_rate": 0.0}
+
+    # 7) Build response
+    t = list(range(len(y_pred)))
+    result = {
+        "targets": TARGETS,
+        "time_index": t,
+        "y_pred": y_pred.tolist(),
+        "y_true": None if y_true_seq is None else y_true_seq.tolist(),
+        "resid_abs": None if resid is None else resid.tolist(),
+        "resid_ucl": RESID_UCLS,
+        "metrics": metrics,
+        "cva": cva
+    }
+    LAST_RESULT = result
+    return JSONResponse(result)
 
 # ---------- Optional: on-demand PDF report ----------
 @app.post("/report/pdf")
