@@ -183,10 +183,6 @@ def read_ordered_csv_assign_names(
 # ---------- API ----------
 app = FastAPI(title="Soft Sensing API", version="1.0.0")
 
-@app.get("/")
-def read_root():
-    return {"message": "Hello! Your API is running"}
-
 # CORS to allow your front-end (adjust for prod domain)
 app.add_middleware(
     CORSMiddleware,
@@ -201,6 +197,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/")
+def read_root():
+    return {"message": "Hello! Your API is running"}
 
 LAST_RESULT = None  # optional cache for /report/pdf
 
