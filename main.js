@@ -11,7 +11,7 @@
 // Split API URLs for auth vs ML
 const AUTH_API_BASE_URL = window.location.hostname === "localhost"
     ? "http://localhost:5000"
-    : "https://fyp-website-2.onrender.com";   // Node.js
+    : "https://fyp-website-xkq5.onrender.com";   // Node.js
 
 const ML_API_BASE_URL = window.location.hostname === "localhost"
     ? "http://localhost:8000"
