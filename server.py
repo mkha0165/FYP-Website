@@ -198,7 +198,6 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://localhost:3000",
         "https://fyp-website-xkq5.onrender.com",  # frontend
-        "https://fyp-website-3.onrender.com",     # backend (needed for some browsers)
     ],
     allow_credentials=True,
     allow_methods=["*"],
