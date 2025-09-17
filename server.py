@@ -214,51 +214,33 @@ class PredictResponse(BaseModel):
     metrics: dict[str, dict] | None
     cva: dict
 
-import zipfile
-
 @app.post("/predict", response_model=PredictResponse)
 async def predict(file: UploadFile = File(...)):
     global LAST_RESULT
     import gc
 
     try:
-        # --- 1) Ensure it's a .zip file ---
-        if not file.filename.lower().endswith(".zip"):
-            raise HTTPException(status_code=400, detail="Please upload a .zip file containing a single CSV.")
-
+        # 1) Read CSV with strict schema
         content = await file.read()
+        df = read_ordered_csv_assign_names(content, ALL_COLS, TARGETS, FEATURES)
 
-        # --- 2) Open the zip ---
-        try:
-            with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                csv_files = [name for name in zf.namelist() if name.lower().endswith(".csv")]
-                if len(csv_files) != 1:
-                    raise HTTPException(status_code=400,
-                        detail=f"Zip must contain exactly 1 CSV, found {len(csv_files)}.")
-                csv_bytes = zf.read(csv_files[0])
-        except zipfile.BadZipFile:
-            raise HTTPException(status_code=400, detail="Uploaded file is not a valid zip archive.")
-
-        # --- 3) Parse CSV with strict schema ---
-        df = read_ordered_csv_assign_names(csv_bytes, ALL_COLS, TARGETS, FEATURES)
-
-        # --- 4) Prepare inputs ---
+        # 2) Prepare inputs (features only)
         X = SCALER_X.transform(df[FEATURES].values)
-        del df, content, csv_bytes  # free memory early
+        del df, content  # free memory early
 
-        # --- 5) Sequences for LSTM ---
+        # 3) Sequences for LSTM
         X_seq = make_sequences_X(X, WINDOW, HORIZON)
         if X_seq.size == 0:
             raise HTTPException(status_code=400,
                                 detail=f"Not enough rows for window={WINDOW}, horizon={HORIZON}.")
 
-        # --- 6) Predict ---
+        # 4) Predict
         with torch.no_grad():
             y_pred_std = MODEL(torch.tensor(X_seq, dtype=torch.float32)).cpu().numpy()
         y_pred = SCALER_Y.inverse_transform(y_pred_std)
-        del y_pred_std, X_seq
+        del y_pred_std, X_seq  # free memory
 
-        # --- 7) Handle ground truth if available ---
+        # 5) Handle ground truth if available
         y_true_seq, resid, metrics = None, None, None
         if all(t in ALL_COLS for t in TARGETS):
             y_full = df[TARGETS].values if "df" in locals() else None
@@ -283,7 +265,7 @@ async def predict(file: UploadFile = File(...)):
                     r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
                     metrics[name] = {"rmse": rmse, "mae": mae, "r2": r2}
 
-        # --- 8) CVA ---
+        # 6) CVA
         Yp_te, _ = build_pf_blocks(X, P_LAGS, F_LAGS)
         cva = {"t": [], "T2": [], "Q": [], "T2_UCL": T2_UCL,
                "Q_UCL": Q_UCL, "breach_rate": 0.0}
@@ -301,7 +283,7 @@ async def predict(file: UploadFile = File(...)):
                 "breach_rate": breach_rate
             }
 
-        # --- 9) Build result ---
+        # 7) Build result (convert everything to lists)
         result = {
             "targets": TARGETS,
             "time_index": list(range(len(y_pred))),
@@ -314,7 +296,7 @@ async def predict(file: UploadFile = File(...)):
         }
         LAST_RESULT = result
 
-        # cleanup
+        # cleanup heavy arrays
         del X, Yp_te, Z, E, T2, Q, y_pred, y_true_seq, resid
         gc.collect()
         torch.cuda.empty_cache()
@@ -330,5 +312,4 @@ async def predict(file: UploadFile = File(...)):
             status_code=500,
             content={"error": str(e), "trace": traceback.format_exc()}
         )
-
 
