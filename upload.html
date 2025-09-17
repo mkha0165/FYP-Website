@@ -100,7 +100,7 @@
 
     async function handleFile(file) {
       if (!file) return;
-      if (!file.name.toLowerCase().endsWith(".csv")) {
+      if (!file.name.toLowerCase().endsWith(".zip")) {
         uploadStatus.innerHTML = `<span class="text-yellow-300">Please upload a .csv file.</span>`;
         return;
       }
