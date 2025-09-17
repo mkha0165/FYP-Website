@@ -9,7 +9,6 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 import joblib
 
-
 # ---------- Load artifacts at startup ----------
 with open("config.json") as f:
     CFG = json.load(f)
@@ -217,103 +216,99 @@ class PredictResponse(BaseModel):
 @app.post("/predict", response_model=PredictResponse)
 async def predict(file: UploadFile = File(...)):
     global LAST_RESULT
+    import gc
 
-    # 1) Read CSV with strict schema; only impute inputs
     try:
+        # 1) Read CSV with strict schema
         content = await file.read()
         df = read_ordered_csv_assign_names(content, ALL_COLS, TARGETS, FEATURES)
+
+        # 2) Prepare inputs (features only)
+        X = SCALER_X.transform(df[FEATURES].values)
+        del df, content  # free memory early
+
+        # 3) Sequences for LSTM
+        X_seq = make_sequences_X(X, WINDOW, HORIZON)
+        if X_seq.size == 0:
+            raise HTTPException(status_code=400,
+                                detail=f"Not enough rows for window={WINDOW}, horizon={HORIZON}.")
+
+        # 4) Predict
+        with torch.no_grad():
+            y_pred_std = MODEL(torch.tensor(X_seq, dtype=torch.float32)).cpu().numpy()
+        y_pred = SCALER_Y.inverse_transform(y_pred_std)
+        del y_pred_std, X_seq  # free memory
+
+        # 5) Handle ground truth if available
+        y_true_seq, resid, metrics = None, None, None
+        if all(t in ALL_COLS for t in TARGETS):
+            y_full = df[TARGETS].values if "df" in locals() else None
+            if y_full is not None and not np.isnan(y_full).all():
+                seq_truth = []
+                T = len(y_full)
+                for i in range(T - WINDOW - HORIZON + 1):
+                    seq_truth.append(y_full[i + WINDOW + HORIZON - 1])
+                y_true_seq = np.array(seq_truth)
+                if np.isnan(y_true_seq).any():
+                    mask = ~np.isnan(y_true_seq).any(axis=1)
+                    y_true_seq = y_true_seq[mask]
+                    y_pred = y_pred[mask]
+                resid = np.abs(y_true_seq - y_pred)
+                metrics = {}
+                for j, name in enumerate(TARGETS):
+                    yj, yhat = y_true_seq[:, j], y_pred[:, j]
+                    rmse = float(np.sqrt(np.mean((yj - yhat) ** 2)))
+                    mae  = float(np.mean(np.abs(yj - yhat)))
+                    ss_res = float(np.sum((yj - yhat) ** 2))
+                    ss_tot = float(np.sum((yj - np.mean(yj)) ** 2))
+                    r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+                    metrics[name] = {"rmse": rmse, "mae": mae, "r2": r2}
+
+        # 6) CVA
+        Yp_te, _ = build_pf_blocks(X, P_LAGS, F_LAGS)
+        cva = {"t": [], "T2": [], "Q": [], "T2_UCL": T2_UCL,
+               "Q_UCL": Q_UCL, "breach_rate": 0.0}
+        if Yp_te.shape[1] > 0:
+            Z = J @ Yp_te
+            E = L @ Yp_te
+            T2, Q = np.sum(Z * Z, axis=0), np.sum(E * E, axis=0)
+            breach_rate = float(np.mean((T2 > T2_UCL) | (Q > Q_UCL)))
+            cva = {
+                "t": list(range(len(T2))),
+                "T2": T2.tolist(),
+                "Q": Q.tolist(),
+                "T2_UCL": T2_UCL,
+                "Q_UCL": Q_UCL,
+                "breach_rate": breach_rate
+            }
+
+        # 7) Build result (convert everything to lists)
+        result = {
+            "targets": TARGETS,
+            "time_index": list(range(len(y_pred))),
+            "y_pred": y_pred.tolist(),
+            "y_true": None if y_true_seq is None else y_true_seq.tolist(),
+            "resid_abs": None if resid is None else resid.tolist(),
+            "resid_ucl": RESID_UCLS,
+            "metrics": metrics,
+            "cva": cva
+        }
+        LAST_RESULT = result
+
+        # cleanup heavy arrays
+        del X, Yp_te, Z, E, T2, Q, y_pred, y_true_seq, resid
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        return JSONResponse(result)
+
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}")
-
-    # 2) Prepare inputs (features only)
-    X = SCALER_X.transform(df[FEATURES].values)
-
-    # 3) Sequences for LSTM
-    X_seq = make_sequences_X(X, WINDOW, HORIZON)
-    if X_seq.size == 0:
-        raise HTTPException(status_code=400, detail=f"Not enough rows for window={WINDOW}, horizon={HORIZON}.")
-
-    # 4) Predict target(s)
-    with torch.no_grad():
-        y_pred_std = MODEL(torch.tensor(X_seq, dtype=torch.float32)).cpu().numpy()  # (N, len(TARGETS))
-    y_pred = SCALER_Y.inverse_transform(y_pred_std)
-
-    # 5) Ground truth handling (ONLY if target column has real values)
-    y_true_seq = None
-    resid = None
-    metrics = None
-    has_truth_col = all(t in df.columns for t in TARGETS)
-    if has_truth_col:
-        y_full = df[TARGETS].values
-        if not np.isnan(y_full).all():
-            seq_truth = []
-            T = len(y_full)
-            for i in range(T - WINDOW - HORIZON + 1):
-                seq_truth.append(y_full[i + WINDOW + HORIZON - 1])
-            y_true_seq = np.array(seq_truth)
-
-            if np.isnan(y_true_seq).any():
-                mask = ~np.isnan(y_true_seq).any(axis=1)
-                y_true_seq = y_true_seq[mask]
-                y_pred = y_pred[mask]
-
-            resid = np.abs(y_true_seq - y_pred)
-            metrics = {}
-            for j, name in enumerate(TARGETS):
-                yj = y_true_seq[:, j]; yhat = y_pred[:, j]
-                rmse = float(np.sqrt(np.mean((yj - yhat) ** 2)))
-                mae  = float(np.mean(np.abs(yj - yhat)))
-                ss_res = float(np.sum((yj - yhat) ** 2))
-                ss_tot = float(np.sum((yj - np.mean(yj)) ** 2))
-                r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
-                metrics[name] = {"rmse": rmse, "mae": mae, "r2": r2}
-
-    # 6) CVA on inputs (scaled)
-    Yp_te, _ = build_pf_blocks(X, P_LAGS, F_LAGS)
-    if Yp_te.shape[1] > 0:
-        Z = J @ Yp_te
-        E = L @ Yp_te
-        T2 = np.sum(Z * Z, axis=0)
-        Q  = np.sum(E * E, axis=0)
-        breach_rate = float(np.mean((T2 > T2_UCL) | (Q > Q_UCL)))
-        t_cva = list(range(len(T2)))
-        cva = {
-            "t": t_cva, "T2": T2.tolist(), "Q": Q.tolist(),
-            "T2_UCL": T2_UCL, "Q_UCL": Q_UCL, "breach_rate": breach_rate
-        }
-    else:
-        cva = {"t": [], "T2": [], "Q": [], "T2_UCL": T2_UCL, "Q_UCL": Q_UCL, "breach_rate": 0.0}
-
-    # 7) Build response
-    t = list(range(len(y_pred)))
-    result = {
-        "targets": TARGETS,
-        "time_index": t,
-        "y_pred": y_pred.tolist(),
-        "y_true": None if y_true_seq is None else y_true_seq.tolist(),
-        "resid_abs": None if resid is None else resid.tolist(),
-        "resid_ucl": RESID_UCLS,
-        "metrics": metrics,
-        "cva": cva
-    }
-    LAST_RESULT = result
-    return JSONResponse(result)
-
-# ---------- Optional: on-demand PDF report ----------
-@app.post("/report/pdf")
-def make_report(shap: dict | None = Body(default=None)):
-    global LAST_RESULT
-    if LAST_RESULT is None:
-        return Response(
-            content="No prediction result available. Run /predict first.",
-            status_code=400
+        import traceback
+        print("Error in /predict:", e)
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "trace": traceback.format_exc()}
         )
 
-    # PDF generation removed (report_generator not available)
-    # Instead, return the last result as JSON or an error
-    return JSONResponse({
-        "message": "PDF generation not implemented (report_generator missing).",
-        "last_result": LAST_RESULT
-    })
