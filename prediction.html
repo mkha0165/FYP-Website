@@ -102,7 +102,7 @@
     // Keep a global to assemble the report later
     window.ReportData = {};
 
-    // === CVA plot (RAW with fault detection) ===
+    // === CVA plot (shade per-plot only where that metric exceeds its threshold) ===
     (() => {
       // 1) Raw arrays
       let tCVA = (res.cva?.t || []).slice();
@@ -125,65 +125,80 @@
         Q    = Q.slice(burnIn);
       }
 
-      // 3) Fault mask (exceeds either limit)
-      const faultMask = T2.map((v, i) => (v > T2_UCL) || (Q[i] > Q_UCL));
+      // 3) Masks and windows
+      const maskT2  = T2.map(v => v > T2_UCL);
+      const maskQ   = Q.map(v => v > Q_UCL);
+      const maskAny = maskT2.map((v,i) => v || maskQ[i]);
 
-      // 4) Find fault windows (continuous runs of true)
-      const faultWindows = [];
-      let i = 0;
-      while (i < faultMask.length) {
-        if (faultMask[i]) {
-          const start = i;
-          while (i < faultMask.length && faultMask[i]) i++;
-          const end = i - 1;
-          faultWindows.push([start, end]);
-        } else {
-          i++;
+      function findWindows(mask) {
+        const wins = [];
+        let i = 0;
+        while (i < mask.length) {
+          if (mask[i]) {
+            const s = i;
+            while (i < mask.length && mask[i]) i++;
+            wins.push([s, i - 1]);
+          } else i++;
         }
+        return wins;
       }
 
-      // 5) Build traces
+      const windowsT2  = findWindows(maskT2);
+      const windowsQ   = findWindows(maskQ);
+      const windowsAny = findWindows(maskAny); // for the table/PDF
+
+      // 4) Traces
       const tracesCVA = [
-        { x: tCVA, y: T2, mode: "lines", name: "T²", xaxis: "x", yaxis: "y" },
-        { x: tCVA, y: tCVA.map(() => T2_UCL), mode: "lines", name: "T² UCL", line: { dash: "dash" }, xaxis: "x", yaxis: "y" },
+        { x: tCVA, y: T2, mode: "lines", name: "T²", xaxis: "x",  yaxis: "y"  },
+        { x: tCVA, y: tCVA.map(() => T2_UCL), mode: "lines", name: "T² UCL", line: { dash: "dash" }, xaxis: "x",  yaxis: "y"  },
         { x: tCVA, y: Q,  mode: "lines", name: "Q",  xaxis: "x2", yaxis: "y2" },
-        { x: tCVA, y: tCVA.map(() => Q_UCL), mode: "lines", name: "Q UCL", line: { dash: "dash" }, xaxis: "x2", yaxis: "y2" }
+        { x: tCVA, y: tCVA.map(() => Q_UCL),  mode: "lines", name: "Q UCL",  line: { dash: "dash" }, xaxis: "x2", yaxis: "y2" }
       ];
 
-      // 6) Axis ranges (cap for readability)
+      // 5) Axis ranges (cap for readability)
       const capT2 = 1e4, capQ = 1e4;
       const maxT2 = Math.max(...T2), maxQ = Math.max(...Q);
 
-      // 7) Shapes (fault shading + lines)
+      // 6) Shapes & annotations (shade only on the subplot that breaches)
       const shapes = [];
       const annotations = [];
       const maxWindowsToDraw = 20;
-      for (let k = 0; k < Math.min(maxWindowsToDraw, faultWindows.length); k++) {
-        const [s, e] = faultWindows[k];
+
+      // T²-only shading on top subplot
+      for (let k = 0; k < Math.min(maxWindowsToDraw, windowsT2.length); k++) {
+        const [s, e] = windowsT2[k];
         const x0 = tCVA[s], x1 = tCVA[e];
 
-        // Shaded regions
         shapes.push(
-          { type: "rect", xref: "x",  yref: "paper", x0, x1, y0: 0.52, y1: 0.98, fillcolor: "rgba(255,99,71,0.15)", line: { width: 0 } },
+          { type: "rect", xref: "x", yref: "paper", x0, x1, y0: 0.52, y1: 0.98, fillcolor: "rgba(255,99,71,0.15)", line: { width: 0 } },
+          { type: "line", xref: "x", yref: "y", x0, x1: x0, y0: 0, y1: Math.min(capT2, maxT2*1.1), line: { color: "tomato", width: 1, dash: "dot" } },
+          { type: "line", xref: "x", yref: "y", x0: x1, x1, y0: 0, y1: Math.min(capT2, maxT2*1.1), line: { color: "tomato", width: 1, dash: "dot" } }
+        );
+
+        annotations.push(
+          { x: x0, y: Math.min(capT2, maxT2*1.15), xref: "x", yref: "y", text: "Fault Start", showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" },
+          { x: x1, y: Math.min(capT2, maxT2*1.15), xref: "x", yref: "y", text: "Fault End", showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" }
+        );
+      }
+
+      // Q-only shading on bottom subplot
+      for (let k = 0; k < Math.min(maxWindowsToDraw, windowsQ.length); k++) {
+        const [s, e] = windowsQ[k];
+        const x0 = tCVA[s], x1 = tCVA[e];
+
+        shapes.push(
           { type: "rect", xref: "x2", yref: "paper", x0, x1, y0: 0.02, y1: 0.48, fillcolor: "rgba(255,99,71,0.15)", line: { width: 0 } },
-          // Start/End lines top
-          { type: "line", xref: "x", yref: "y",  x0, x1: x0, y0: 0, y1: Math.min(capT2, maxT2*1.1), line: { color: "tomato", width: 1, dash: "dot" } },
-          { type: "line", xref: "x", yref: "y",  x0: x1, x1, y0: 0, y1: Math.min(capT2, maxT2*1.1), line: { color: "tomato", width: 1, dash: "dot" } },
-          // Start/End lines bottom
           { type: "line", xref: "x2", yref: "y2", x0, x1: x0, y0: 0, y1: Math.min(capQ, maxQ*1.1), line: { color: "tomato", width: 1, dash: "dot" } },
           { type: "line", xref: "x2", yref: "y2", x0: x1, x1, y0: 0, y1: Math.min(capQ, maxQ*1.1), line: { color: "tomato", width: 1, dash: "dot" } }
         );
 
-        // Annotations
         annotations.push(
-          { x: x0, y: Math.min(capT2, maxT2*1.15), xref: "x",  yref: "y",  text: "Fault Start", showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" },
-          { x: x1, y: Math.min(capT2, maxT2*1.15), xref: "x",  yref: "y",  text: "Fault End",   showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" },
-          { x: x0, y: Math.min(capQ,  maxQ*1.15),  xref: "x2", yref: "y2", text: "Fault Start", showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" },
-          { x: x1, y: Math.min(capQ,  maxQ*1.15),  xref: "x2", yref: "y2", text: "Fault End",   showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" }
+          { x: x0, y: Math.min(capQ, maxQ*1.15), xref: "x2", yref: "y2", text: "Fault Start", showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" },
+          { x: x1, y: Math.min(capQ, maxQ*1.15), xref: "x2", yref: "y2", text: "Fault End", showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" }
         );
       }
 
-      // 8) Layout
+      // 7) Layout
       const layoutCVA = {
         ...baseLayout,
         title: "CVA Indices (Raw)",
@@ -199,29 +214,29 @@
 
       Plotly.newPlot("plot-cva", tracesCVA, layoutCVA, baseConfig);
 
-      // Update breach rate
-      const breachRate = faultMask.length ? (faultMask.filter(Boolean).length / faultMask.length) : 0;
+      // 8) Breach rates (separate)
+      const rateT2 = maskT2.length ? maskT2.filter(Boolean).length / maskT2.length : 0;
+      const rateQ  = maskQ.length  ? maskQ.filter(Boolean).length  / maskQ.length  : 0;
       meta.insertAdjacentHTML("beforeend",
-        `<div class="mt-1">CVA breach rate (raw): <strong>${(breachRate*100).toFixed(2)}%</strong></div>`
-      );
+        `<div class="mt-1">T² breach rate: <strong>${(rateT2*100).toFixed(2)}%</strong></div>`);
+      meta.insertAdjacentHTML("beforeend",
+        `<div class="mt-1">Q breach rate: <strong>${(rateQ*100).toFixed(2)}%</strong></div>`);
 
-     // Build ranges using EXACT x-axis values (no reformatting)
-      const faultRanges = faultWindows.map(([s, e]) => {
+      // 9) Build ranges (union windows) using EXACT x-axis + correct duration
+      const faultRanges = windowsAny.map(([s, e]) => {
         const x0 = tCVA[s];
         const x1 = tCVA[e];
 
-        // Compute duration = end - start
-        let durationSec = null;     // numeric seconds or numeric delta (if numeric axis)
-        let durationLabel = "—";    // string for display in the PDF/table
+        // Duration = end - start
+        let durationSec = null;   // seconds (timestamps) or numeric delta (numeric axis)
+        let durationLabel = "—";
 
         const d0 = new Date(x0), d1 = new Date(x1);
         if (!isNaN(d0) && !isNaN(d1)) {
-          // Treat as timestamps: seconds between end and start
-          durationSec = (d1 - d0);                 // seconds
+          durationSec = (d1 - d0);           // seconds
           durationLabel = durationSec.toFixed(1) + " s";
         } else if (isFinite(Number(x0)) && isFinite(Number(x1))) {
-          // Treat as numeric axis: raw numeric delta
-          durationSec = Number(x1) - Number(x0);          // same units as your x-axis
+          durationSec = Number(x1) - Number(x0);    // raw units from numeric axis
           durationLabel = String(durationSec);
         }
 
@@ -231,21 +246,21 @@
         return {
           startIdx: s,
           endIdx: e,
-          start: String(x0),           // exact x-axis value
-          end:   String(x1),           // exact x-axis value
-          durationSec,                 // numeric (or null)
-          durationLabel,               // pretty string for display
+          start: String(x0),       // exact x-axis values
+          end:   String(x1),
+          durationSec,
+          durationLabel,
           maxT2: Math.max(...T2seg),
           maxQ: Math.max(...Qseg)
         };
       });
 
-
       // Save for report
       window.ReportData = window.ReportData || {};
       window.ReportData.cva = {
         t: tCVA, T2, Q, T2_UCL, Q_UCL,
-        faultWindows, faultRanges,
+        faultWindows: windowsAny,
+        faultRanges,
         maxT2, maxQ
       };
     })();
@@ -258,15 +273,14 @@
       if (shap && shap.data) Plotly.Plots.resize("plot-shap");
     });
 
-    // === SHAP feature importance (optional, if file exists) ===
-    fetch("shap_importance_pt501.json")
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (!data) return;
-        const items = (data.feature_importance || []).slice(0, 15);
+    // === SHAP feature importance (robust: from res, or JSON, else hide) ===
+    (async function renderSHAP() {
+      const shapDiv = document.getElementById("plot-shap");
+
+      function drawSHAP(items) {
         const x = items.map(d => d.feature);
         const y = items.map(d => d.score);
-        Plotly.newPlot("plot-shap", [{
+        return Plotly.newPlot("plot-shap", [{
           type: "bar", x, y, name: "Impact (mean |SHAP|)"
         }], {
           title: "Which sensors influence PT501 predictions?",
@@ -276,8 +290,41 @@
           paper_bgcolor: "#1f2937", plot_bgcolor: "#1f2937",
           font: { color: "#fff" }
         }, { responsive: true, displaylogo: false });
-      })
-      .catch(() => { /* ignore missing file */ });
+      }
+
+      let items = null;
+
+      // Try 1: from session result
+      if (res?.shap?.feature_importance && Array.isArray(res.shap.feature_importance)) {
+        items = res.shap.feature_importance;
+      }
+
+      // Try 2: fetch JSON
+      if (!items) {
+        try {
+          const r = await fetch("shap_importance_pt501.json", { cache: "no-store" });
+          if (r.ok) {
+            const data = await r.json();
+            if (data?.feature_importance && Array.isArray(data.feature_importance)) {
+              items = data.feature_importance;
+            }
+          }
+        } catch (e) {
+          console.warn("SHAP fetch failed:", e);
+        }
+      }
+
+      // Render or hide
+      if (items && items.length) {
+        await drawSHAP(items.slice(0, 15));
+      } else {
+        shapDiv.style.display = "none";
+        meta.insertAdjacentHTML(
+          "beforeend",
+          `<div class="mt-1 text-gray-400">SHAP importance not available for PT501.</div>`
+        );
+      }
+    })();
 
     // === PDF Generation ===
     async function plotToPNG(divId, scale = 2) {
@@ -348,7 +395,7 @@
         doc.text(String(r.start), 14 + 20 + 2, y);           // exact x-axis value
         doc.text(String(r.end),   14 + 20 + 60 + 2, y);      // exact x-axis value
         // Duration column:
-        doc.text(r.durationLabel, 14 + 20 + 60 + 60 + 2, y);
+        doc.text(r.durationLabel || "—", 14 + 20 + 60 + 60 + 2, y);
         doc.text(`${(r.maxT2 ?? 0).toFixed(2)} / ${(r.maxQ ?? 0).toFixed(2)}`, 14 + 20 + 60 + 60 + 22 + 2, y);
         y += 6;
       }
