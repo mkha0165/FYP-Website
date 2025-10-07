@@ -1,24 +1,34 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>Prediction Results - PT501</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Plotly -->
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+  <!-- jsPDF (for PDF export) -->
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 </head>
 <body class="min-h-screen bg-gray-900 text-white p-6">
   <div class="max-w-6xl mx-auto">
-    <h1 class="text-2xl font-bold mb-4">Prediction Results (PT501 - Pressure in 3 Phase Separator (MPA))</h1>
+    <h1 class="text-2xl font-bold mb-4">
+      Prediction Results (PT501 - Pressure in 3 Phase Separator (MPA))
+    </h1>
 
     <div id="meta" class="mb-6 text-sm text-gray-300"></div>
 
     <div id="plot-preds" class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[500px]"></div>
     <div id="plot-cva"   class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[600px]"></div>
-    <div id="plot-shap" class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[500px]"></div>
-    
+    <div id="plot-shap"  class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[500px]"></div>
+
     <button id="btnReport"
-    class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded">
-    Download PDF Report
+      class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded">
+      Download PDF Report
     </button>
   </div>
 
@@ -32,20 +42,20 @@
 
     // Find PT501 index
     const targetName = "PT501";
-    const j = res.targets.indexOf(targetName);
+    const j = Array.isArray(res.targets) ? res.targets.indexOf(targetName) : -1;
     if (j === -1) {
       document.getElementById("meta").innerHTML =
         `<div class="text-red-400">Error: PT501 not found in model targets.</div>`;
       throw new Error("PT501 not in targets");
     }
 
-    const t = res.time_index;
+    const t = res.time_index || [];
     const hasTruth = Array.isArray(res.y_true) && res.y_true.length > 0;
 
     // === Meta info ===
     const meta = document.getElementById("meta");
     meta.innerHTML = `
-      <div>Target variable: <code>${targetName}</code>  (MPa) </div>
+      <div>Target variable: <code>${targetName}</code> (MPa)</div>
       ${hasTruth ? "" : "<div class='text-yellow-400 mt-1'>No ground-truth values — predictions only.</div>"}
     `;
 
@@ -64,11 +74,33 @@
       ]
     };
 
-    // === PT501 Predictions plot ===
-    Plotly.newPlot("plot-preds", [{
-      x: t, y: res.y_pred.map(r => r[j]),
-      mode: "lines", name: "PT501 Predicted"
-    }], { ...baseLayout, title: "Predicted PT501", yaxis: { title: "Value" } }, baseConfig);
+    // === PT501 Predictions (no residuals) ===
+    const yPred = (res.y_pred || []).map(r => r[j]);
+    let yTrue = null;
+    if (hasTruth) {
+      // Accept either shape: y_true[n] = value or array
+      yTrue = res.y_true.map(row => Array.isArray(row) ? row[j] : row);
+    }
+
+    const tracesPred = [{
+      x: t, y: yPred, mode: "lines", name: "PT501 Predicted", yaxis: "y1"
+    }];
+    if (hasTruth) {
+      const n = Math.min(t.length, yPred.length, yTrue.length);
+      tracesPred.push({
+        x: t.slice(0, n), y: yTrue.slice(0, n),
+        mode: "lines", name: "PT501 Actual", yaxis: "y1"
+      });
+    }
+
+    Plotly.newPlot("plot-preds", tracesPred, {
+      ...baseLayout,
+      title: hasTruth ? "PT501: Predicted vs Actual" : "Predicted PT501",
+      yaxis: { title: "Value (MPa)" }
+    }, baseConfig);
+
+    // Keep a global to assemble the report later
+    window.ReportData = {};
 
     // === CVA plot (RAW with fault detection) ===
     (() => {
@@ -93,7 +125,7 @@
         Q    = Q.slice(burnIn);
       }
 
-      // 3) Fault mask
+      // 3) Fault mask (exceeds either limit)
       const faultMask = T2.map((v, i) => (v > T2_UCL) || (Q[i] > Q_UCL));
 
       // 4) Find fault windows (continuous runs of true)
@@ -118,89 +150,39 @@
         { x: tCVA, y: tCVA.map(() => Q_UCL), mode: "lines", name: "Q UCL", line: { dash: "dash" }, xaxis: "x2", yaxis: "y2" }
       ];
 
-      // 6) Axis ranges (cap)
+      // 6) Axis ranges (cap for readability)
       const capT2 = 1e4, capQ = 1e4;
       const maxT2 = Math.max(...T2), maxQ = Math.max(...Q);
 
       // 7) Shapes (fault shading + lines)
       const shapes = [];
+      const annotations = [];
       const maxWindowsToDraw = 20;
       for (let k = 0; k < Math.min(maxWindowsToDraw, faultWindows.length); k++) {
         const [s, e] = faultWindows[k];
         const x0 = tCVA[s], x1 = tCVA[e];
+
+        // Shaded regions
         shapes.push(
-          // Shaded regions
-          { type: "rect", xref: "x", yref: "paper", x0, x1, y0: 0.52, y1: 0.98, fillcolor: "rgba(255,99,71,0.15)", line: { width: 0 } },
+          { type: "rect", xref: "x",  yref: "paper", x0, x1, y0: 0.52, y1: 0.98, fillcolor: "rgba(255,99,71,0.15)", line: { width: 0 } },
           { type: "rect", xref: "x2", yref: "paper", x0, x1, y0: 0.02, y1: 0.48, fillcolor: "rgba(255,99,71,0.15)", line: { width: 0 } },
           // Start/End lines top
-          { type: "line", xref: "x", yref: "y", x0, x1: x0, y0: 0, y1: Math.min(capT2, maxT2*1.1), line: { color: "tomato", width: 1, dash: "dot" } },
-          { type: "line", xref: "x", yref: "y", x0: x1, x1, y0: 0, y1: Math.min(capT2, maxT2*1.1), line: { color: "tomato", width: 1, dash: "dot" } },
+          { type: "line", xref: "x", yref: "y",  x0, x1: x0, y0: 0, y1: Math.min(capT2, maxT2*1.1), line: { color: "tomato", width: 1, dash: "dot" } },
+          { type: "line", xref: "x", yref: "y",  x0: x1, x1, y0: 0, y1: Math.min(capT2, maxT2*1.1), line: { color: "tomato", width: 1, dash: "dot" } },
           // Start/End lines bottom
           { type: "line", xref: "x2", yref: "y2", x0, x1: x0, y0: 0, y1: Math.min(capQ, maxQ*1.1), line: { color: "tomato", width: 1, dash: "dot" } },
           { type: "line", xref: "x2", yref: "y2", x0: x1, x1, y0: 0, y1: Math.min(capQ, maxQ*1.1), line: { color: "tomato", width: 1, dash: "dot" } }
         );
+
+        // Annotations
+        annotations.push(
+          { x: x0, y: Math.min(capT2, maxT2*1.15), xref: "x",  yref: "y",  text: "Fault Start", showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" },
+          { x: x1, y: Math.min(capT2, maxT2*1.15), xref: "x",  yref: "y",  text: "Fault End",   showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" },
+          { x: x0, y: Math.min(capQ,  maxQ*1.15),  xref: "x2", yref: "y2", text: "Fault Start", showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" },
+          { x: x1, y: Math.min(capQ,  maxQ*1.15),  xref: "x2", yref: "y2", text: "Fault End",   showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" }
+        );
       }
-      const annotations = [];
-    for (let k = 0; k < Math.min(maxWindowsToDraw, faultWindows.length); k++) {
-    const [s, e] = faultWindows[k];
-    const x0 = tCVA[s], x1 = tCVA[e];
-    // Fault Start annotation (top subplot)
-    annotations.push({
-        x: x0,
-        y: Math.min(capT2, maxT2*1.15),
-        xref: "x",
-        yref: "y",
-        text: "Fault Start",
-        showarrow: true,
-        arrowhead: 2,
-        ax: 0,
-        ay: -30,
-        font: { color: "tomato", size: 12 },
-        bgcolor: "rgba(255,99,71,0.15)"
-    });
-    // Fault End annotation (top subplot)
-    annotations.push({
-        x: x1,
-        y: Math.min(capT2, maxT2*1.15),
-        xref: "x",
-        yref: "y",
-        text: "Fault End",
-        showarrow: true,
-        arrowhead: 2,
-        ax: 0,
-        ay: -30,
-        font: { color: "tomato", size: 12 },
-        bgcolor: "rgba(255,99,71,0.15)"
-    });
-    // Fault Start annotation (bottom subplot)
-    annotations.push({
-        x: x0,
-        y: Math.min(capQ, maxQ*1.15),
-        xref: "x2",
-        yref: "y2",
-        text: "Fault Start",
-        showarrow: true,
-        arrowhead: 2,
-        ax: 0,
-        ay: -30,
-        font: { color: "tomato", size: 12 },
-        bgcolor: "rgba(255,99,71,0.15)"
-    });
-    // Fault End annotation (bottom subplot)
-    annotations.push({
-        x: x1,
-        y: Math.min(capQ, maxQ*1.15),
-        xref: "x2",
-        yref: "y2",
-        text: "Fault End",
-        showarrow: true,
-        arrowhead: 2,
-        ax: 0,
-        ay: -30,
-        font: { color: "tomato", size: 12 },
-        bgcolor: "rgba(255,99,71,0.15)"
-    });
-    }
+
       // 8) Layout
       const layoutCVA = {
         ...baseLayout,
@@ -212,6 +194,7 @@
         xaxis2: { title: "Time" },
         yaxis2: { title: "Squared Prediction Error Q", range: [0, Math.min(capQ, maxQ*1.2)] },
         shapes,
+        annotations
       };
 
       Plotly.newPlot("plot-cva", tracesCVA, layoutCVA, baseConfig);
@@ -221,31 +204,182 @@
       meta.insertAdjacentHTML("beforeend",
         `<div class="mt-1">CVA breach rate (raw): <strong>${(breachRate*100).toFixed(2)}%</strong></div>`
       );
+
+     // Build ranges using EXACT x-axis values (no reformatting)
+      const faultRanges = faultWindows.map(([s, e]) => {
+        const x0 = tCVA[s];
+        const x1 = tCVA[e];
+
+        // Compute duration = end - start
+        let durationSec = null;     // numeric seconds or numeric delta (if numeric axis)
+        let durationLabel = "—";    // string for display in the PDF/table
+
+        const d0 = new Date(x0), d1 = new Date(x1);
+        if (!isNaN(d0) && !isNaN(d1)) {
+          // Treat as timestamps: seconds between end and start
+          durationSec = (d1 - d0);                 // seconds
+          durationLabel = durationSec.toFixed(1) + " s";
+        } else if (isFinite(Number(x0)) && isFinite(Number(x1))) {
+          // Treat as numeric axis: raw numeric delta
+          durationSec = Number(x1) - Number(x0);          // same units as your x-axis
+          durationLabel = String(durationSec);
+        }
+
+        const T2seg = T2.slice(s, e + 1);
+        const Qseg  = Q.slice(s, e + 1);
+
+        return {
+          startIdx: s,
+          endIdx: e,
+          start: String(x0),           // exact x-axis value
+          end:   String(x1),           // exact x-axis value
+          durationSec,                 // numeric (or null)
+          durationLabel,               // pretty string for display
+          maxT2: Math.max(...T2seg),
+          maxQ: Math.max(...Qseg)
+        };
+      });
+
+
+      // Save for report
+      window.ReportData = window.ReportData || {};
+      window.ReportData.cva = {
+        t: tCVA, T2, Q, T2_UCL, Q_UCL,
+        faultWindows, faultRanges,
+        maxT2, maxQ
+      };
     })();
 
     // === Responsive resize ===
     window.addEventListener("resize", () => {
       Plotly.Plots.resize("plot-preds");
       Plotly.Plots.resize("plot-cva");
+      const shap = document.getElementById("plot-shap");
+      if (shap && shap.data) Plotly.Plots.resize("plot-shap");
     });
 
-
-    fetch("shap_importance_pt501.json")  // serve this file statically alongside your site
-    .then(r => r.json())
-    .then(data => {
-        const items = data.feature_importance.slice(0, 15); // top 15
+    // === SHAP feature importance (optional, if file exists) ===
+    fetch("shap_importance_pt501.json")
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data) return;
+        const items = (data.feature_importance || []).slice(0, 15);
         const x = items.map(d => d.feature);
         const y = items.map(d => d.score);
         Plotly.newPlot("plot-shap", [{
-        type: "bar", x, y, name: "Impact (mean |SHAP|)"
+          type: "bar", x, y, name: "Impact (mean |SHAP|)"
         }], {
-        title: "Which sensors influence PT501 predictions?",
-        margin: { t: 40, r: 20, b: 80, l: 60 },
-        xaxis: { tickangle: -30 },
-        yaxis: { title: "Mean |SHAP| (aggregated over time)" },
-        paper_bgcolor: "#1f2937", plot_bgcolor: "#1f2937",
-        font: { color: "#fff" }
+          title: "Which sensors influence PT501 predictions?",
+          margin: { t: 40, r: 20, b: 80, l: 60 },
+          xaxis: { tickangle: -30 },
+          yaxis: { title: "Mean |SHAP| (aggregated over time)" },
+          paper_bgcolor: "#1f2937", plot_bgcolor: "#1f2937",
+          font: { color: "#fff" }
         }, { responsive: true, displaylogo: false });
+      })
+      .catch(() => { /* ignore missing file */ });
+
+    // === PDF Generation ===
+    async function plotToPNG(divId, scale = 2) {
+      const el = document.getElementById(divId);
+      await Plotly.Plots.resize(el);
+      return await Plotly.toImage(el, { format: "png", scale });
+    }
+
+    document.getElementById("btnReport").addEventListener("click", async () => {
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ unit: "mm", format: "a4" });
+
+      // --- Header
+      const title = "Predictive Maintenance Report — PT501";
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(16);
+      doc.text(title, 14, 16);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 22);
+
+      // Gather prepared data
+      const rd = window.ReportData || {};
+      const cva = rd.cva || {};
+
+      const t2Breach = Array.isArray(cva.T2) && isFinite(cva.T2_UCL)
+        ? cva.T2.some(v => v > cva.T2_UCL) : false;
+      const qBreach = Array.isArray(cva.Q) && isFinite(cva.Q_UCL)
+        ? cva.Q.some(v => v > cva.Q_UCL) : false;
+
+      // --- Summary
+      let y = 30;
+      doc.setFontSize(12); doc.setFont("helvetica","bold");
+      doc.text("1) Summary", 14, y);
+      y += 6; doc.setFontSize(10); doc.setFont("helvetica","normal");
+      doc.text(`T² exceeded UCL: ${t2Breach ? "Yes" : "No"} (UCL=${(cva.T2_UCL ?? "n/a")})`, 14, y); y += 5;
+      doc.text(`Q exceeded UCL: ${qBreach ? "Yes" : "No"} (UCL=${(cva.Q_UCL ?? "n/a")})`, 14, y); y += 8;
+
+      // --- Recommendation (simple rules)
+      doc.setFontSize(12); doc.setFont("helvetica","bold");
+      doc.text("2) Maintenance Recommendation", 14, y);
+      y += 6; doc.setFontSize(10); doc.setFont("helvetica","normal");
+      let rec = "System operating within control limits. No immediate action required.";
+      if (t2Breach && qBreach) rec = "Immediate inspection recommended — process anomaly detected (T² & Q exceeded).";
+      else if (t2Breach || qBreach) rec = "Potential drift detected — schedule maintenance check and monitor closely.";
+      const recLines = doc.splitTextToSize(rec, 182);
+      doc.text(recLines, 14, y);
+      y += 10 + recLines.length * 1.8;
+
+      // --- Abnormal windows table
+      doc.setFontSize(12); doc.setFont("helvetica","bold");
+      doc.text("3) Abnormal Time Windows (exceeded threshold)", 14, y);
+      y += 6; doc.setFontSize(10); doc.setFont("helvetica","normal");
+
+      const rows = (cva.faultRanges || []);
+      // Table header
+      doc.text("No.", 14 + 2, y);
+      doc.text("Start (x-axis)", 14 + 20 + 2, y);
+      doc.text("End (x-axis)",   14 + 20 + 60 + 2, y);
+      doc.text("Duration(s)",    14 + 20 + 60 + 60 + 2, y);
+      doc.text("Max T² / Q",     14 + 20 + 60 + 60 + 22 + 2, y);
+      y += 4;
+
+      for (let idx = 0; idx < rows.length; idx++) {
+        const r = rows[idx];
+        if (y > 270) { doc.addPage(); y = 20; }
+        doc.text(String(idx + 1), 14 + 2, y);
+        doc.text(String(r.start), 14 + 20 + 2, y);           // exact x-axis value
+        doc.text(String(r.end),   14 + 20 + 60 + 2, y);      // exact x-axis value
+        // Duration column:
+        doc.text(r.durationLabel, 14 + 20 + 60 + 60 + 2, y);
+        doc.text(`${(r.maxT2 ?? 0).toFixed(2)} / ${(r.maxQ ?? 0).toFixed(2)}`, 14 + 20 + 60 + 60 + 22 + 2, y);
+        y += 6;
+      }
+
+      // --- Charts page
+      doc.addPage();
+      doc.setFontSize(12); doc.setFont("helvetica","bold");
+      doc.text("4) Diagnostic Charts", 14, 16);
+      doc.setFont("helvetica","normal"); doc.setFontSize(10);
+
+      // Export current Plotly state as PNGs (what the user currently sees)
+      const predsPNG = await plotToPNG("plot-preds", 2);
+      const cvaPNG   = await plotToPNG("plot-cva", 2);
+      let shapPNG = null;
+      const shapEl = document.getElementById("plot-shap");
+      if (shapEl && shapEl.data) {
+        shapPNG = await plotToPNG("plot-shap", 2);
+      }
+
+      // Place images (fit width ~180mm)
+      let imgY = 22;
+      const imgW = 180, imgH = 80;
+      doc.addImage(predsPNG, "PNG", 14, imgY, imgW, imgH); imgY += imgH + 6;
+      doc.addImage(cvaPNG,   "PNG", 14, imgY, imgW, imgH); imgY += imgH + 6;
+      if (shapPNG) {
+        if (imgY > 250) { doc.addPage(); imgY = 20; }
+        doc.addImage(shapPNG, "PNG", 14, imgY, imgW, imgH);
+      }
+
+      // --- Save
+      doc.save("Maintenance_Report_PT501.pdf");
     });
   </script>
 </body>

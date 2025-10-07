@@ -9,8 +9,6 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 import joblib
 
-from report_generator import build_pdf_from_result
-
 # ---------- Load artifacts at startup ----------
 with open("config.json") as f:
     CFG = json.load(f)
