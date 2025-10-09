@@ -25,22 +25,6 @@ mongoose.connect(MONGODB_URI, {
   console.log("MongoDB Atlas Connected Successfully!");
   console.log("Database:", mongoose.connection.db.databaseName);
 })
-.catch(err => {
-  console.error("MongoDB Connection Failed:", err.message);
-  console.log("\nTROUBLESHOOTING CHECKLIST:");
-  console.log("1. Verify username/password in connection string");
-  console.log("2. Check Network Access in MongoDB Atlas:");
-  console.log("   - Go to MongoDB Atlas - Network Access");
-  console.log("   - Click 'Add IP Address'");
-  console.log("   - Add '0.0.0.0/0' (allow from anywhere) for testing");
-  console.log("3. Verify Database User exists:");
-  console.log("   - Go to MongoDB Atlas - Database Access");
-  console.log("   - Make sure user 'jkgang432' has readWrite permissions");
-  console.log("4. Check if database 'fyp-website' exists or will be created");
-  console.log("\nConnection string format:");
-  console.log("mongodb+srv://USERNAME:PASSWORD@cluster.xxx.mongodb.net/DATABASE_NAME?options");
-  process.exit(1);
-});
 
 // ===== User Schema & Model =====
 const UserSchema = new mongoose.Schema({
