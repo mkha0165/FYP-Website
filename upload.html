@@ -1,9 +1,4 @@
-<!--
-  Purpose: Protected page where logged-in users can upload CSV files.
-  - Verifies login using localStorage.
-  - Sends the CSV to FastAPI /predict.
-  - Stores the API JSON in sessionStorage and redirects to prediction.html.
--->
+<!-- upload.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -72,19 +67,20 @@
     const browseBtn = document.getElementById("browseBtn");
     const uploadStatus = document.getElementById("uploadStatus");
 
-    // ===== API config =====
-    const API_URL = "http://127.0.0.1:8000/predict"; // <- change to your server URL in prod
+    // ===== API base (same-origin in prod, localhost in dev) =====
+    const API_BASE = (location.hostname === "localhost" || location.hostname === "127.0.0.1")
+      ? "http://127.0.0.1:8000"
+      : ""; // same-origin if served behind the same host
 
     async function postFileToAPI(file) {
       const formData = new FormData();
       formData.append("file", file);
 
-      // Simple status message
       uploadStatus.innerHTML = `<span class="text-gray-200">Uploading <strong>${file.name}</strong>…</span>`;
       browseBtn.disabled = true;
       dropZone.classList.add("pointer-events-none", "opacity-60");
 
-      const res = await fetch(API_URL, { method: "POST", body: formData });
+      const res = await fetch(`${API_BASE}/predict`, { method: "POST", body: formData });
 
       browseBtn.disabled = false;
       dropZone.classList.remove("pointer-events-none", "opacity-60");
@@ -93,7 +89,8 @@
         const msg = await res.text();
         throw new Error(msg || "Upload failed");
       }
-      return res.json();
+      // Do NOT store the big JSON — server caches it
+      return true;
     }
 
     async function handleFile(file) {
@@ -103,11 +100,9 @@
         return;
       }
       try {
-        const result = await postFileToAPI(file);
+        await postFileToAPI(file);
         uploadStatus.innerHTML = `<span class="text-green-400 font-semibold">${file.name} processed successfully. Redirecting…</span>`;
-        // Save API JSON for next page
-        sessionStorage.setItem("predictionResult", JSON.stringify(result));
-        // Go to prediction page
+        // Just redirect; prediction.html will GET /result/latest
         window.location.href = "prediction.html";
       } catch (err) {
         uploadStatus.innerHTML = `<div class="text-red-400 mt-2 break-words">Error: ${err.message}</div>`;
