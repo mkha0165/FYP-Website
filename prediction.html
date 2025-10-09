@@ -237,7 +237,7 @@
             const x0=tCVA[s], x1=tCVA[e];
             let durationLabel="—";
             const d0=new Date(x0), d1=new Date(x1);
-            if (!isNaN(d0) && !isNaN(d1)) durationLabel=((d1-d0)/1000).toFixed(1)+" s";
+            if (!isNaN(d0) && !isNaN(d1)) durationLabel=((d1-d0)).toFixed(1)+" s";
             else if (isFinite(Number(x0)) && isFinite(Number(x1))) durationLabel=String(Number(x1)-Number(x0));
             return {
               startIdx:s, endIdx:e, start:String(x0), end:String(x1),
