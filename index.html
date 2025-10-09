@@ -1,0 +1,127 @@
+<!---
+Purpose: Provides the login and signup forms for users.
+  - Login allows existing users to authenticate.
+  - Signup allows new users to register with username, email, and password.
+  Linked Files: 
+    - main.css (styling)
+    - main.js (form validation & API calls)
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="utf-8">
+    <title>Login / Sign Up Form</title>
+    <link rel="shortcut icon" href="/assets/favicon.ico">
+    <link rel="stylesheet" href="main.css">
+</head>
+<body>
+    <div class="container">
+        <!-- LOGIN FORM -->
+        <form class="form" id="login">
+            <h1 class="form__title">Login</h1>
+            <div class="form__message"></div>
+            
+            <!-- Username or email field -->
+            <div class="form__input-group">
+                <input type="text" id="loginUsername" class="form__input" placeholder="Username or email">
+                <div class="form__input-error-message"></div>
+            </div>
+
+            <!-- Password field -->
+            <div class="form__input-group">
+                <input type="password" id="loginPassword" class="form__input" placeholder="Password">
+                <div class="form__input-error-message"></div>
+            </div>
+
+             <!-- Submit Button -->
+            <button class="form__button" type="submit">Continue</button>
+
+             <!-- Links-->
+            <p class="form__text">
+                <a href="#" class="form__link">Forgot your password?</a>
+            </p>
+            <p class="form__text">
+                <a class="form__link" href="#" id="linkCreateAccount">Don't have an account? Create account</a>
+            </p>
+        </form>
+
+        <!-- SIGNUP FORM (hidden by default) -->
+        <form class="form form--hidden" id="createAccount">
+            <h1 class="form__title">Create Account</h1>
+            <div class="form__message"></div>
+
+            <!-- Username -->
+            <div class="form__input-group">
+                <input type="text" 
+                id="signupUsername" 
+                class="form__input" 
+                placeholder="Username"
+                pattern="^[a-zA-Z][a-zA-Z0-9._]{2,19}$"
+                title="Username must start with a letter, contain only letters, numbers, dots, or underscores, and be 3 to 20 characters long.">
+                <div class="form__input-error-message"></div>
+            </div>
+
+            <!-- Email -->
+            <div class="form__input-group">
+                <input type="text" id="signupEmail" class="form__input" placeholder="Email Address">
+                <div class="form__input-error-message"></div>
+            </div>
+
+            <!-- Password -->
+            <div class="form__input-group">
+                <input type="password" id="signupPassword" class="form__input" placeholder="Password">
+                <div class="form__input-error-message"></div>
+            </div>
+
+            <!-- Confirm Password -->
+            <div class="form__input-group">
+                <input type="password" id="signupConfirmPassword" class="form__input" placeholder="Confirm Password">
+                <div class="form__input-error-message"></div>
+            </div>
+
+            <!-- Signup Button -->
+            <button class="form__button" type="submit">Continue</button>
+            <!-- Switch back to login -->
+            <p class="form__text">
+                <a class="form__link" href="#" id="linkLogin">Already have an account? Sign in</a>
+            </p>
+        </form>
+
+        <!-- RESET PASSWORD FORM -->
+    <form class="form form--hidden" id="resetPassword">
+        <h1 class="form__title">Reset Password</h1>
+        <div class="form__message"></div>
+
+        <!-- Username/Email -->
+        <div class="form__input-group">
+            <input type="text" id="resetIdentifier" class="form__input" placeholder="Username or Email">
+            <div class="form__input-error-message"></div>
+        </div>
+
+        <!-- New Password -->
+        <div class="form__input-group">
+            <input type="password" id="resetNewPassword" class="form__input" placeholder="New Password">
+            <div class="form__input-error-message"></div>
+        </div>
+
+        <!-- Confirm New Password -->
+        <div class="form__input-group">
+            <input type="password" id="resetConfirmPassword" class="form__input" placeholder="Confirm New Password">
+            <div class="form__input-error-message"></div>
+        </div>
+
+        <!-- Reset Button -->
+        <button class="form__button" type="submit">Update Password</button>
+
+        <!-- Back to login -->
+        <p class="form__text">
+            <a class="form__link" href="#" id="linkBackLogin">Back to Login</a>
+        </p>
+    </form>
+</div>
+
+
+    <script src="main.js"></script>
+</body>
+</html>
