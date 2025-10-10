@@ -26,19 +26,23 @@
     <div id="plot-preds" class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[500px]"></div>
     <div id="plot-cva"   class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[600px]"></div>
 
-    <!-- Contribution plot -->
+    <!-- Contribution plot (with % toggle) -->
     <div class="bg-gray-800 rounded-xl p-4 mb-6 w-full">
       <div class="flex items-center justify-between mb-2">
         <h2 class="text-lg font-semibold">Contribution (C) – Top Drivers</h2>
-        <div class="flex items-center gap-2 text-sm text-gray-300">
+        <div class="flex items-center gap-3 text-sm text-gray-300">
           Focus @ t:
           <input id="kSelect" type="number" class="w-24 bg-gray-700 rounded-lg px-2 py-1" value="0" />
+          <label class="inline-flex items-center gap-2 select-none">
+            <input id="asPercent" type="checkbox" class="accent-blue-500">
+            Show as %
+          </label>
           <button id="btnApplyK" class="px-3 py-1 rounded-lg bg-slate-700 hover:bg-slate-600">Apply</button>
         </div>
       </div>
       <p class="text-xs text-gray-400 mb-2">
         Bars show variable-level contributions at the selected time index (retained-space C and residual-space Q).
-        Defaults to the first threshold breach; otherwise the maximum of normalized T²/Q.
+        Toggle “Show as %” to normalize each set to 100% at that time.
       </p>
       <div id="plot-contrib" class="w-full h-[520px]"></div>
     </div>
@@ -237,7 +241,7 @@
             const x0=tCVA[s], x1=tCVA[e];
             let durationLabel="—";
             const d0=new Date(x0), d1=new Date(x1);
-            if (!isNaN(d0) && !isNaN(d1)) durationLabel=((d1-d0)).toFixed(1)+" s";
+            if (!isNaN(d0) && !isNaN(d1)) durationLabel=((d1-d0)/1000).toFixed(1)+" s";
             else if (isFinite(Number(x0)) && isFinite(Number(x1))) durationLabel=String(Number(x1)-Number(x0));
             return {
               startIdx:s, endIdx:e, start:String(x0), end:String(x1),
@@ -254,6 +258,7 @@
         for (let i=0;i<T2.length;i++){ if (T2N[i]>1 || QN[i]>1){ kStar=i; break; } }
         if (kStar<0) {
           let best=-Infinity, arg=0;
+          for (let i=0;i/T2.length;i++){ /* no-op just placeholder */ }
           for (let i=0;i<T2.length;i++){ const s=Math.max(T2N[i],QN[i]); if (s>=best){best=s; arg=i;} }
           kStar=arg;
         }
@@ -261,7 +266,7 @@
         document.getElementById("kSelect").value = kStar;
       })();
 
-      // === Contribution plot
+      // === Contribution plot (supports % toggle)
       function renderContrib(kStar) {
         const container = document.getElementById("plot-contrib");
         const contrib = res.cva?.contrib;
@@ -270,8 +275,8 @@
           return;
         }
         const names = contrib.features || [];
-        const Ctot  = contrib.C_total || [];
-        const Cq    = contrib.C_q || [];
+        const Ctot  = contrib.C_total || []; // retained-space (can be signed)
+        const Cq    = contrib.C_q     || []; // residual Q (>=0)
         if (!names.length || !Ctot.length) {
           container.innerHTML = "<div class='text-yellow-400'>No contribution data.</div>";
           return;
@@ -281,33 +286,62 @@
         if (kStar == null || isNaN(kStar) || kStar < 0) kStar = 0;
         if (kStar >= N) kStar = N - 1;
 
-        const take = (M, k) => Array.from({length:m}, (_,j)=> Math.abs((M[j]||[])[k] || 0));
-        const vTot = take(Ctot, kStar);
-        const vQ   = take(Cq,   kStar);
+        // Magnitudes per variable at time k
+        const takeAbs = (M, k) => Array.from({length:m}, (_,j)=> Math.abs((M[j]||[])[k] || 0));
+        const vTotAbs = takeAbs(Ctot, kStar);  // retained |C|
+        const vQAbs   = takeAbs(Cq,   kStar);  // residual Q already nonneg
 
-        const order = vTot.map((v,i)=>[v,i]).sort((a,b)=> b[0]-a[0]).slice(0, Math.min(10,m)).map(x=>x[1]);
-        const labels = order.map(i=> names[i]);
-        const valsTot= order.map(i=> vTot[i]);
-        const valsQ  = order.map(i=> vQ[i]);
+        const asPercent = !!document.getElementById("asPercent")?.checked;
 
+        // Convert to percent safely (avoid divide-by-zero)
+        function toPercent(vec) {
+          const s = vec.reduce((a,b)=>a+b, 0);
+          if (!isFinite(s) || s <= 0) return vec.map(() => 0);
+          return vec.map(v => 100 * v / s);
+        }
+
+        const valsTotRaw = vTotAbs;
+        const valsQRaw   = vQAbs;
+        const valsTot    = asPercent ? toPercent(valsTotRaw) : valsTotRaw;
+        const valsQ      = asPercent ? toPercent(valsQRaw)   : valsQRaw;
+
+        // Rank by retained (or by percent if toggled)
+        const score = asPercent ? valsTot : valsTotRaw;
+        const order = score.map((v,i)=>[v,i]).sort((a,b)=> b[0]-a[0]).slice(0, Math.min(10,m)).map(x=>x[1]);
+
+        const labels  = order.map(i=> names[i]);
+        const xTot    = order.map(i=> valsTot[i]);
+        const xQ      = order.map(i=> valsQ[i]);
+
+        const hoverVal = asPercent ? "%{x:.2f}%" : "%{x:.4g}";
         const traces = [
-          { type:"bar", x: valsTot, y: labels, name: "C (retained)", orientation: "h" },
-          { type:"bar", x: valsQ,   y: labels, name: "Residual (Q)", orientation: "h" }
+          { type:"bar", x: xTot, y: labels, name: "C (retained)", orientation: "h",
+            hovertemplate: "<b>%{y}</b><br>C (retained): "+hoverVal+"<extra></extra>" },
+          { type:"bar", x: xQ,   y: labels, name: "Residual (Q)", orientation: "h",
+            hovertemplate: "<b>%{y}</b><br>Residual Q: "+hoverVal+"<extra></extra>" }
         ];
         const layout = {
           margin: { t: 40, r: 20, b: 40, l: 160 },
           barmode: "group",
-          title: `Contribution (Top ${labels.length}) @ t=${kStar}`,
-          xaxis: { title: "Magnitude (absolute)" }
+          title: `Contribution (Top ${labels.length}) @ t=${kStar}` + (asPercent ? " — % of total" : ""),
+          xaxis: { title: asPercent ? "Share of total (%)" : "Magnitude (absolute)", range: asPercent ? [0, 100] : undefined }
         };
         Plotly.newPlot("plot-contrib", traces, layout, {responsive:true, displaylogo:false});
 
         window.ReportData.contribAt = kStar;
       }
+
+      // Initial contribution render
       renderContrib((window.ReportData && window.ReportData.contribAt) ?? 0);
+
+      // Manual selection + % toggle
       document.getElementById("btnApplyK").addEventListener("click", () => {
         const v = parseInt(document.getElementById("kSelect").value, 10);
         const k = isNaN(v) ? (window.ReportData?.contribAt ?? 0) : v;
+        renderContrib(k);
+      });
+      document.getElementById("asPercent").addEventListener("change", () => {
+        const k = window.ReportData?.contribAt ?? 0;
         renderContrib(k);
       });
 
@@ -437,6 +471,15 @@
         }
 
         doc.save("Maintenance_Report_PT501.pdf");
+      });
+
+      // === Responsive resize
+      window.addEventListener("resize", () => {
+        Plotly.Plots.resize("plot-preds");
+        Plotly.Plots.resize("plot-cva");
+        Plotly.Plots.resize("plot-contrib");
+        const shap = document.getElementById("plot-shap");
+        if (shap && shap.data) Plotly.Plots.resize("plot-shap");
       });
     })();
   </script>
