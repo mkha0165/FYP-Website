@@ -1,14 +1,11 @@
 # server.py
-import json, io, os, re
+import json, io, os, re, warnings, joblib, torch
 import numpy as np
 import pandas as pd
-import torch
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
-import joblib
-import warnings
 from sklearn.exceptions import InconsistentVersionWarning
 
 # Suppress version warnings
@@ -23,42 +20,68 @@ with open("thresholds.json") as f:
 SCALER_X = joblib.load("scalerX.pkl")
 SCALER_Y = joblib.load("scalery.pkl")
 J = np.load("cva_J.npy")
-L = np.load("cva_l.npy") 
+L = np.load("cva_L.npy")
 T2_UCL = float(THR["T2_UCL"])
 Q_UCL = float(THR["Q_UCL"])
 RESID_UCLS = {k: float(v["resid_ucl"]) for k, v in THR["per_target"].items()}
 
-TARGETS  = CFG["targets"]           # e.g. ["PT501"]
-FEATURES = CFG["features"]          # inputs only (target excluded)
+TARGETS  = CFG["targets"]
+FEATURES = CFG["features"]
 ALL_COLS = CFG["all_cols"]
 WINDOW   = int(CFG["window"])
 HORIZON  = int(CFG["horizon"])
-HIDDEN   = int(CFG["hidden_size"])
 P_LAGS   = int(CFG["p_lags"])
 F_LAGS   = int(CFG["f_lags"])
 
-# ---------- Inference-only LSTM ----------
-class LSTMModel(torch.nn.Module):
-    def __init__(self, input_size, output_size, hidden_size=64, num_layers=1):
-        super().__init__()
-        self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers=num_layers, batch_first=True)
-        self.fc = torch.nn.Sequential(
-            torch.nn.Linear(hidden_size, hidden_size // 2),
-            torch.nn.ReLU(),
-            torch.nn.Linear(hidden_size // 2, output_size),
-        )
-    def forward(self, x):
-        y, _ = self.lstm(x)
-        y = y[:, -1, :]
-        return self.fc(y)
+# ==========================================================
+# === TransformerRegressor (same as in train_once.py) ===
+# ==========================================================
+import torch.nn as nn
+import math
 
-MODEL = LSTMModel(
-    input_size=len(FEATURES),
-    output_size=len(TARGETS),
-    hidden_size=HIDDEN
-)
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1), :]
+
+class TransformerRegressor(nn.Module):
+    def __init__(self, n_features, d_model=64, nhead=4, num_layers=2, dim_feedforward=128, dropout=0.2):
+        super().__init__()
+        self.input_fc = nn.Linear(n_features, d_model)
+        self.pos_encoder = PositionalEncoding(d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead,
+            dim_feedforward=dim_feedforward, dropout=dropout,
+            batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.fc_out = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.ReLU(),
+            nn.Linear(d_model // 2, len(TARGETS))
+        )
+
+    def forward(self, x):
+        x = self.input_fc(x)
+        x = self.pos_encoder(x)
+        out = self.transformer_encoder(x)
+        last = out[:, -1, :]
+        return self.fc_out(last)
+
+# ---------- Load trained model ----------
+MODEL = TransformerRegressor(n_features=len(FEATURES))
 MODEL.load_state_dict(torch.load("model.pt", map_location="cpu"))
 MODEL.eval()
+
 
 def make_sequences_X(X, window, horizon):
     Xs = []
