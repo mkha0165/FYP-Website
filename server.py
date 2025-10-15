@@ -145,11 +145,10 @@ app = FastAPI(title="Soft Sensing API", version="1.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "http://localhost:8080",
         "http://127.0.0.1:5500", "http://localhost:5500",
         "http://127.0.0.1:3000", "http://localhost:3000",
-        "http://127.0.0.1:8000", "http://localhost:8000",
-        "http://localhost:5000",  # your Node/Express dev
-        "*"                       # loosen for quick tests; tighten in prod
+        "http://localhost:8080"  # Added for Node.js server
     ],
     allow_credentials=True,
     allow_methods=["*"],
