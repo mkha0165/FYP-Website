@@ -9,7 +9,7 @@
 
 /* --- CONFIG --- */
 // Automatically switch between local and deployed backend
-const API_BASE_URL = "http://localhost:5000"; 
+const API_BASE_URL = "http://localhost:8080"; 
 
 /* --- FORM UTILITIES --- */
 function setFormMessage(formElement, type, message) {
