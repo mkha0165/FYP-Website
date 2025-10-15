@@ -192,9 +192,10 @@ app = FastAPI(title="Soft Sensing API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "http://localhost:8080",
         "http://127.0.0.1:5500", "http://localhost:5500",
         "http://127.0.0.1:3000", "http://localhost:3000",
-        "http://localhost:5000"  # Added for Node.js server
+        "http://localhost:8080"  # Added for Node.js server
     ],
     allow_credentials=True,
     allow_methods=["*"],
