@@ -1,53 +1,73 @@
-<!--
-  Purpose: Protected page where logged-in users can upload CSV files.
-  - Verifies login using localStorage.
-  - Sends the CSV to FastAPI /predict.
-  - Stores the API JSON in sessionStorage and redirects to prediction.html.
--->
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <title>Upload CSV</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Sidebar independent scroll */
+    #historySidebar {
+      max-height: 90vh; /* prevent full-page scroll */
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.4) transparent;
+    }
+
+    #historySidebar::-webkit-scrollbar {
+      width: 8px;
+    }
+    #historySidebar::-webkit-scrollbar-thumb {
+      background-color: rgba(255,255,255,0.4);
+      border-radius: 4px;
+    }
+    #historySidebar::-webkit-scrollbar-thumb:hover {
+      background-color: rgba(255,255,255,0.6);
+    }
+  </style>
 </head>
 <body class="h-screen w-screen bg-gradient-to-br from-gray-800 to-black flex justify-center items-center">
 
-  <div class="bg-white/10 backdrop-blur-md rounded-3xl p-10 w-full max-w-3xl text-center">
-    <!-- Top bar: user info + logout -->
-    <div class="flex justify-between items-center mb-4">
-      <p class="text-sm text-white">
-        Logged in as: <span id="loggedInUser" class="font-semibold">User</span>
-      </p>
-      <button id="logoutBtn"
-        class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-6 rounded-full">
-        Logout
+  <div class="flex w-full max-w-6xl bg-white/10 backdrop-blur-md rounded-3xl overflow-hidden">
+    
+    <!-- LEFT: Upload section -->
+    <div class="flex-1 p-10 text-center">
+      <div class="flex justify-between items-center mb-4">
+        <p class="text-sm text-white">
+          Logged in as: <span id="loggedInUser" class="font-semibold">User</span>
+        </p>
+        <button id="logoutBtn"
+          class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-6 rounded-full">
+          Logout
+        </button>
+      </div>
+
+      <h2 class="text-2xl font-bold text-white mb-6">Upload CSV File</h2>
+
+      <div id="dropZone"
+        class="bg-white/20 border-2 border-dashed border-white/50 rounded-xl p-10 text-white mb-4 cursor-pointer"
+      >
+        <svg class="w-16 h-16 mb-4 mx-auto" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M4 12l4-4m0 0l4 4m-4-4v12" />
+        </svg>
+        <p class="text-lg font-medium">Drag and Drop your CSV Files here</p>
+        <p class="text-md">or Click To Browse</p>
+        <input type="file" id="fileInput" accept=".csv" class="hidden" />
+      </div>
+
+      <button id="browseBtn"
+        class="bg-gradient-to-r from-gray-700 to-black py-3 px-9 text-white rounded-full mb-4">
+        Browse Files
       </button>
+
+      <div id="uploadStatus" class="text-white mt-4 min-h-6"></div>
     </div>
 
-    <h2 class="text-2xl font-bold text-white mb-6">Upload CSV File</h2>
-
-    <!-- Drag & Drop upload area -->
-    <div id="dropZone"
-      class="bg-white/20 border-2 border-dashed border-white/50 rounded-xl p-10 text-white mb-4 cursor-pointer"
-    >
-      <svg class="w-16 h-16 mb-4 mx-auto" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round"
-          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M4 12l4-4m0 0l4 4m-4-4v12" />
-      </svg>
-      <p class="text-lg font-medium">Drag and Drop your CSV Files here</p>
-      <p class="text-md">or Click To Browse</p>
-      <input type="file" id="fileInput" accept=".csv" class="hidden" />
+    <!-- RIGHT: Scrollable Result History Sidebar -->
+    <div id="historySidebar" class="w-72 bg-black/40 border-l border-white/20 p-6 text-white">
+      <h3 class="text-xl font-bold mb-4 border-b border-white/30 pb-2">Result History</h3>
+      <ul id="historyList" class="space-y-3 text-left text-sm"></ul>
     </div>
-
-    <!-- Browse button -->
-    <button id="browseBtn"
-      class="bg-gradient-to-r from-gray-700 to-black py-3 px-9 text-white rounded-full mb-4">
-      Browse Files
-    </button>
-
-    <!-- Upload status -->
-    <div id="uploadStatus" class="text-white mt-4 min-h-6"></div>
   </div>
 
   <script>
@@ -73,13 +93,12 @@
     const uploadStatus = document.getElementById("uploadStatus");
 
     // ===== API config =====
-    const API_URL = "http://127.0.0.1:8000/predict"; // <- change to your server URL in prod
+    const API_URL = "http://127.0.0.1:8000/predict"; // change for deployment
 
     async function postFileToAPI(file) {
       const formData = new FormData();
       formData.append("file", file);
 
-      // Simple status message
       uploadStatus.innerHTML = `<span class="text-gray-200">Uploading <strong>${file.name}</strong>…</span>`;
       browseBtn.disabled = true;
       dropZone.classList.add("pointer-events-none", "opacity-60");
@@ -105,16 +124,15 @@
       try {
         const result = await postFileToAPI(file);
         uploadStatus.innerHTML = `<span class="text-green-400 font-semibold">${file.name} processed successfully. Redirecting…</span>`;
-        // Save API JSON for next page
         sessionStorage.setItem("predictionResult", JSON.stringify(result));
-        // Go to prediction page
+        saveToHistory(file.name, result);
         window.location.href = "prediction.html";
       } catch (err) {
         uploadStatus.innerHTML = `<div class="text-red-400 mt-2 break-words">Error: ${err.message}</div>`;
       }
     }
 
-    // ===== Drag & drop & browse =====
+    // ===== Drag & Drop & Browse =====
     dropZone.addEventListener("click", () => fileInput.click());
     dropZone.addEventListener("dragover", (e) => e.preventDefault());
     dropZone.addEventListener("drop", (e) => {
@@ -127,6 +145,86 @@
       const file = e.target.files?.[0];
       handleFile(file);
     });
+
+    // ===== Result History =====
+    function loadHistory() {
+      const username = localStorage.getItem("loggedInUser");
+      const history = JSON.parse(localStorage.getItem(`history_${username}`) || "[]");
+      const historyList = document.getElementById("historyList");
+
+      historyList.innerHTML = "";
+      if (history.length === 0) {
+        historyList.innerHTML = `<li class="text-gray-400 italic">No uploads yet</li>`;
+        return;
+      }
+
+      history.forEach((item, i) => {
+        const li = document.createElement("li");
+        li.className = "bg-white/10 p-3 rounded-lg hover:bg-white/20 transition";
+        li.innerHTML = `
+          <div class="flex justify-between items-center">
+            <div class="flex-1 min-w-0">
+              <p class="font-semibold truncate">${item.filename}</p>
+              <p class="text-xs text-gray-300">${item.date}</p>
+            </div>
+            <div class="flex gap-1 ml-2 shrink-0">
+              <button class="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs" data-view="${i}">
+                View
+              </button>
+              <button class="text-red-400 hover:text-red-600 text-lg font-bold leading-none" data-remove="${i}">
+                ✖
+              </button>
+            </div>
+          </div>
+        `;
+        historyList.appendChild(li);
+      });
+
+      // View button
+      document.querySelectorAll("[data-view]").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          const index = e.target.dataset.view;
+          const username = localStorage.getItem("loggedInUser");
+          const history = JSON.parse(localStorage.getItem(`history_${username}`) || "[]");
+          const record = history[index];
+          if (record) {
+            sessionStorage.setItem("predictionResult", JSON.stringify(record.result));
+            window.location.href = "prediction.html";
+          }
+        });
+      });
+
+      // Remove button
+      document.querySelectorAll("[data-remove]").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          const index = parseInt(e.target.dataset.remove);
+          const username = localStorage.getItem("loggedInUser");
+          const historyKey = `history_${username}`;
+          const history = JSON.parse(localStorage.getItem(historyKey) || "[]");
+          history.splice(index, 1);
+          localStorage.setItem(historyKey, JSON.stringify(history));
+          loadHistory(); // re-render
+        });
+      });
+    }
+
+    function saveToHistory(filename, result) {
+      const username = localStorage.getItem("loggedInUser");
+      const historyKey = `history_${username}`;
+      const history = JSON.parse(localStorage.getItem(historyKey) || "[]");
+
+      const entry = {
+        filename,
+        date: new Date().toLocaleString(),
+        result
+      };
+
+      history.unshift(entry);
+      localStorage.setItem(historyKey, JSON.stringify(history.slice(0, 10)));
+      loadHistory();
+    }
+
+    document.addEventListener("DOMContentLoaded", loadHistory);
   </script>
 </body>
 </html>
