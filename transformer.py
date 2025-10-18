@@ -1,10 +1,9 @@
-# train_once.py  (Transformer-based version)
-import json, joblib, numpy as np, pandas as pd, torch, math
+# transformer_multi.py
+import json, joblib, numpy as np, pandas as pd, torch, math, os
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 from scipy.io import loadmat
 from sklearn.preprocessing import StandardScaler
-from sklearn.neighbors import KernelDensity
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -93,7 +92,7 @@ def fit_cva(Yp, Yf, energy_keep=0.9):
     H = Sff_m12 @ Sfp @ Spp_m12
     U, D, Vt = np.linalg.svd(H, full_matrices=False)
     r = max(1, int(np.searchsorted(np.cumsum(D**2)/np.sum(D**2), energy_keep) + 1))
-    print("CVA r =", r)
+    print("CVA retained components =", r)
     Vr = Vt[:r, :].T
     J = Vr.T @ Spp_m12
     L = (np.eye(Spp_m12.shape[0]) - Vr @ Vr.T) @ Spp_m12
@@ -105,7 +104,7 @@ def ucl_kde(values, alpha=0.99):
 # ==========================================================
 # === Config ===
 # ==========================================================
-key_targets = ['PT501']
+key_targets = ['PT501', 'FT305', 'FT407', 'FT104', 'LI504', 'VC501']  # 👈 change or extend list of target tags
 all_cols = [
     'PT312','PT401','PT408','PT403','PT501','PT408_diff','PT403_diff',
     'FT305','FT104','FT407','LI405','FT406','FT407_density','FT406_density',
@@ -113,83 +112,93 @@ all_cols = [
     'VC501','VC302','VC101','PO1','PT417'
 ]
 window, horizon = 42, 1
-epochs, batch_size, lr = 80, 64, 1e-3
+epochs, batch_size, lr = 50, 64, 1e-3
 p_lags, f_lags = 15, 15
 
+os.makedirs("models", exist_ok=True)
+os.makedirs("scalers", exist_ok=True)
+
 # ==========================================================
-# === Load Training Data ===
+# === Load and Prepare Data ===
 # ==========================================================
-mat = loadmat("data/mat/Training.mat")  # adjust path if needed
+mat = loadmat("data/mat/Training.mat")
 df2 = pd.DataFrame(mat['T2'], columns=all_cols)
 df3 = pd.DataFrame(mat['T3'], columns=all_cols)
 df_train = pd.concat([df2, df3], ignore_index=True)
+
 features = [c for c in all_cols if c not in key_targets]
+X_all = df_train[features].values
+scalerX = StandardScaler().fit(X_all)
+X_scaled = scalerX.transform(X_all)
 
 # ==========================================================
-# === Scale and Sequence Data ===
+# === CVA (input-only, global) ===
 # ==========================================================
-scalerX, scalery = StandardScaler(), StandardScaler()
-Xtr = scalerX.fit_transform(df_train[features].values)
-ytr = scalery.fit_transform(df_train[key_targets].values)
-Xtr_seq, ytr_seq = make_sequences(Xtr, ytr, window, horizon)
-
-# ==========================================================
-# === Train Transformer ===
-# ==========================================================
-model = TransformerRegressor(n_features=Xtr_seq.shape[-1]).to(DEVICE)
-opt = torch.optim.Adam(model.parameters(), lr=lr)
-loss_fn = nn.MSELoss()
-
-loader = DataLoader(
-    TensorDataset(torch.tensor(Xtr_seq, dtype=torch.float32),
-                  torch.tensor(ytr_seq, dtype=torch.float32)),
-    batch_size=batch_size, shuffle=True
-)
-
-print(f"🚀 Training Transformer model for target {key_targets[0]} on {DEVICE}...")
-model.train()
-for epoch in range(1, epochs + 1):
-    epoch_losses = []
-    for xb, yb in loader:
-        xb, yb = xb.to(DEVICE), yb.to(DEVICE)
-        pred = model(xb)
-        loss = loss_fn(pred, yb)
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
-        epoch_losses.append(loss.item())
-    if epoch % 10 == 0 or epoch == 1:
-        print(f"Epoch {epoch:03d} | MSE: {np.mean(epoch_losses):.6f}")
-
-# ==========================================================
-# === Residual UCLs ===
-# ==========================================================
-model.eval()
-with torch.no_grad():
-    y_hat_std = model(torch.tensor(Xtr_seq, dtype=torch.float32).to(DEVICE)).cpu().numpy()
-y_true = scalery.inverse_transform(ytr_seq)
-y_pred = scalery.inverse_transform(y_hat_std)
-resid = y_true - y_pred
-per_target = {'PT501': {"resid_ucl": residual_ucl(resid[:, 0], alpha=0.99)}}
-
-# ==========================================================
-# === CVA (input-only) ===
-# ==========================================================
-Yp_tr, Yf_tr = build_pf_blocks(Xtr, p_lags, f_lags)
+Yp_tr, Yf_tr = build_pf_blocks(X_scaled, p_lags, f_lags)
 J, L = fit_cva(Yp_tr, Yf_tr)
 T2_tr = np.sum((J @ Yp_tr)**2, axis=0)
 Q_tr  = np.sum((L @ Yp_tr)**2, axis=0)
 T2_UCL, Q_UCL = ucl_kde(T2_tr, 0.995), ucl_kde(Q_tr, 0.995)
-
-# ==========================================================
-# === Save Artifacts ===
-# ==========================================================
-joblib.dump(scalerX, "scalerX.pkl")
-joblib.dump(scalery, "scalery.pkl")
-torch.save(model.state_dict(), "model.pt")
 np.save("cva_J.npy", J)
 np.save("cva_L.npy", L)
 
+# ==========================================================
+# === Train Model per Target ===
+# ==========================================================
+per_target = {}
+for target in key_targets:
+    print(f"\n🚀 Training Transformer model for {target} on {DEVICE}...")
+
+    y_all = df_train[[target]].values
+    scalery = StandardScaler().fit(y_all)
+    y_scaled = scalery.transform(y_all)
+
+    X_seq, y_seq = make_sequences(X_scaled, y_scaled, window, horizon)
+
+    model = TransformerRegressor(n_features=X_seq.shape[-1]).to(DEVICE)
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    loss_fn = nn.MSELoss()
+
+    loader = DataLoader(
+        TensorDataset(torch.tensor(X_seq, dtype=torch.float32),
+                      torch.tensor(y_seq, dtype=torch.float32)),
+        batch_size=batch_size, shuffle=True
+    )
+
+    # === Training Loop ===
+    model.train()
+    for epoch in range(1, epochs + 1):
+        losses = []
+        for xb, yb in loader:
+            xb, yb = xb.to(DEVICE), yb.to(DEVICE)
+            pred = model(xb)
+            loss = loss_fn(pred, yb)
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+            losses.append(loss.item())
+        if epoch % 10 == 0 or epoch == 1:
+            print(f"Epoch {epoch:03d} | MSE: {np.mean(losses):.6f}")
+
+    # === Evaluate Residuals and Threshold ===
+    model.eval()
+    with torch.no_grad():
+        y_hat_std = model(torch.tensor(X_seq, dtype=torch.float32).to(DEVICE)).cpu().numpy()
+    y_true = scalery.inverse_transform(y_seq)
+    y_pred = scalery.inverse_transform(y_hat_std)
+    resid = y_true - y_pred
+    resid_ucl = residual_ucl(resid[:, 0], alpha=0.99)
+    per_target[target] = {"resid_ucl": resid_ucl}
+
+    # === Save Artifacts ===
+    torch.save(model.state_dict(), f"models/model_{target}.pt")
+    joblib.dump(scalery, f"scalers/scalery_{target}.pkl")
+    print(f"✅ Saved model_{target}.pt and scalery_{target}.pkl")
+
+# ==========================================================
+# === Save Global Artifacts ===
+# ==========================================================
+joblib.dump(scalerX, "scalerX.pkl")
 with open("thresholds.json", "w") as f:
     json.dump({"per_target": per_target, "T2_UCL": T2_UCL, "Q_UCL": Q_UCL}, f, indent=2)
 
@@ -204,4 +213,4 @@ with open("config.json", "w") as f:
         "f_lags": f_lags
     }, f, indent=2)
 
-print("✅ Saved: model.pt, scalerX.pkl, scalery.pkl, cva_J.npy, cva_L.npy, thresholds.json, config.json")
+print("\n🎉 Training complete! All models and thresholds saved.")
