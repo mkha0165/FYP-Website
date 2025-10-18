@@ -66,31 +66,42 @@ def fit_cva(Yp, Yf, energy_keep=0.9):
     Sff_m12 = sym_inv_sqrt(Sff)
     H = Sff_m12 @ Sfp @ Spp_m12
     U, D, Vt = np.linalg.svd(H, full_matrices=False)
-    r = max(1, int(np.searchsorted(np.cumsum(D**2)/np.sum(D**2), energy_keep) + 1))
-    print("CVA r =", r)
-    # r=25
+    # r = max(1, int(np.searchsorted(np.cumsum(D**2)/np.sum(D**2), energy_keep) + 1))
+    # print("CVA r =", r)
+    r=25
     Vr = Vt[:r, :].T
     J = Vr.T @ Spp_m12
     L = (np.eye(Spp_m12.shape[0]) - Vr @ Vr.T) @ Spp_m12
     return J, L
 
-# def ucl_kde(values, alpha=0.99):
-#     x = np.asarray(values).ravel()
-#     if x.size == 0:
-#         return 0.0
-#     std = np.std(x)
-#     if std == 0:
-#         return float(np.max(x))
-#     bw = 1.06 * std * (len(x) ** (-1/5))
-#     kde = KernelDensity(kernel="gaussian", bandwidth=bw).fit(x.reshape(-1, 1))
-#     grid = np.linspace(0, max(1e-6, x.max() * 1.5), 5000).reshape(-1, 1)
-#     pdf = np.exp(kde.score_samples(grid))
-#     cdf = np.cumsum(pdf); cdf /= cdf[-1]
-#     idx = np.searchsorted(cdf, alpha)
-#     return float(grid[min(idx, len(grid)-1)])
-
 def ucl_kde(values, alpha=0.99):
-    return float(np.quantile(values, alpha))
+    """
+    Gaussian KDE on nonnegative values; numerical CDF via dx-weighted cum-sum.
+    """
+    x = np.asarray(values).ravel()
+    x = x[np.isfinite(x)]
+    if x.size == 0:
+        return 0.0
+    x = np.clip(x, 0.0, None)
+    std = np.std(x)
+    if std == 0:
+        return float(np.max(x))
+    bw = 1.06 * std * (len(x) ** (-1/5))
+    kde = KernelDensity(kernel="gaussian", bandwidth=bw).fit(x.reshape(-1, 1))
+    x_max = x.max()
+    right = x_max + 3.0 * std
+    if not np.isfinite(right) or right <= 0:
+        right = max(1e-6, 1.5 * x_max)
+    grid = np.linspace(0.0, right, 10000).reshape(-1, 1)
+    log_pdf = kde.score_samples(grid)
+    pdf = np.exp(log_pdf)
+    dx = float(grid[1] - grid[0])
+    cdf = np.cumsum(pdf) * dx
+    if cdf[-1] > 0:
+        cdf /= cdf[-1]
+    idx = np.searchsorted(cdf, alpha, side="left")
+    idx = min(int(idx), len(grid) - 1)
+    return float(grid[idx])
 
 # ---------- Config (single target) ----------
 key_targets = ['PT501']

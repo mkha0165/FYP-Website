@@ -15,13 +15,14 @@
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 </head>
 <body class="min-h-screen bg-gray-900 text-white p-6">
- <!-- Top bar with logout button -->
+  <!-- Top bar with logout button -->
   <div class="flex justify-end mb-4">
     <button id="logoutBtn"
       class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded">
       Logout
     </button>
   </div>
+
   <div class="max-w-6xl mx-auto">
     <h1 class="text-2xl font-bold mb-4">
       Prediction Results (PT501 - Pressure in 3 Phase Separator (MPA))
@@ -33,10 +34,13 @@
     <div id="plot-cva"   class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[600px]"></div>
     <div id="plot-shap"  class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[500px]"></div>
 
-    <button id="btnReport"
-      class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded">
-      Download PDF Report
-    </button>
+    <div class="flex gap-3">
+      <button id="btnReport"
+        class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded">
+        Download PDF Report
+      </button>
+      <!-- Export button will be injected after GT evaluation if available -->
+    </div>
   </div>
 
   <script>
@@ -81,17 +85,221 @@
       ]
     };
 
+    /* =========================
+       HELPERS (matching + metrics)
+    ==========================*/
+    function toMs(x) { const d = new Date(x); return isNaN(d) ? null : d.getTime(); }
+
+    function normalizeEndpoints(start, end, axisSamples) {
+      let s = start, e = end;
+      if (typeof s === "number" && typeof e === "number" && s > e) [s, e] = [e, s];
+      const axisMs = toMs(axisSamples[0]);
+      if (axisMs !== null) {
+        const sMs = toMs(s), eMs = toMs(e);
+        if (sMs !== null && eMs !== null) return { s: Math.min(sMs, eMs), e: Math.max(sMs, eMs), scale: "time" };
+      }
+      const sNum = Number(s), eNum = Number(e);
+      return { s: Math.min(sNum, eNum), e: Math.max(sNum, eNum), scale: "num" };
+    }
+
+    function clearAllMetrics() {
+  localStorage.removeItem("fault_metrics_registry");
+  alert("All time-based metrics cleared.");
+}
+
+
+    function windowsFromMask(xs, mask) {
+      const wins = [];
+      let i = 0;
+      while (i < mask.length) {
+        if (mask[i]) {
+          const s = i;
+          while (i < mask.length && mask[i]) i++;
+          const e = i - 1;
+          wins.push([s, e]);
+        } else i++;
+      }
+      return wins.map(([s,e]) => ({ sIdx: s, eIdx: e, sX: xs[s], eX: xs[e] }));
+    }
+
+    function mapWindowToScalar(win, scale) {
+      if (scale === "time") return { s: toMs(win.sX), e: toMs(win.eX) };
+      return { s: Number(win.sX), e: Number(win.eX) };
+    }
+
+    function overlapLen(a, b) { const s = Math.max(a.s, b.s); const e = Math.min(a.e, b.e); return Math.max(0, e - s); }
+    function unionLen(a, b) { return (Math.max(a.e, b.e) - Math.min(a.s, b.s)); }
+
+    // Returns {TP, FP, FN, pairs:[{gtId,detIdx,overlap,iou,delay}], delays[]}
+    function evaluateWindows(detectedWins, gtWins, axisScale, iouThresh = 0.0) {
+      const det = detectedWins.map(w => mapWindowToScalar(w, axisScale));
+      const gt  = gtWins.map(w  => w.scalar);
+      const usedDet = new Set(), usedGt = new Set();
+      const pairs = [], delays = [];
+
+      for (let g = 0; g < gt.length; g++) {
+        let bestDet = -1, bestOverlap = 0, bestIou = 0;
+        for (let d = 0; d < det.length; d++) {
+          if (usedDet.has(d)) continue;
+          const ov = overlapLen(gt[g], det[d]);
+          if (ov > 0) {
+            const iou = ov / unionLen(gt[g], det[d]);
+            if (iou >= iouThresh && ov > bestOverlap) { bestOverlap = ov; bestIou = iou; bestDet = d; }
+          }
+        }
+        if (bestDet >= 0) {
+          usedDet.add(bestDet); usedGt.add(g);
+          const delay = Math.max(0, det[bestDet].s - gt[g].s);
+          delays.push(delay);
+          pairs.push({ gtId: gtWins[g].id ?? `gt${g+1}`, detIdx: bestDet, overlap: bestOverlap, iou: bestIou, delay });
+        }
+      }
+      const TP = pairs.length;
+      const FN = gt.length - usedGt.size;
+      const FP = det.length - usedDet.size;
+      return { TP, FP, FN, pairs, delays };
+    }
+
+    function computeMetricsPerStat({ tCVA, maskT2, maskQ, gtWindows }) {
+      const axisScale = (toMs(tCVA[0]) !== null && toMs(tCVA[tCVA.length-1]) !== null) ? "time" : "num";
+      const gtNorm = gtWindows.map(w => {
+        const { s, e } = normalizeEndpoints(w.start, w.end, tCVA);
+        return { id: w.id, scalar: { s, e } };
+      });
+
+      const detT2 = windowsFromMask(tCVA, maskT2);
+      const detQ  = windowsFromMask(tCVA, maskQ);
+
+      const mT2 = evaluateWindows(detT2, gtNorm, axisScale, 0.0);
+      const mQ  = evaluateWindows(detQ,  gtNorm, axisScale, 0.0);
+
+      const meanDelay = (arr) => arr.length ? arr.reduce((a,b)=>a+b,0)/arr.length : 0;
+      const toSummary = (m) => ({
+        TP: m.TP,
+        FP: m.FP,
+        FN: m.FN,
+        detection_rate: gtNorm.length ? m.TP / gtNorm.length : 0,
+        false_alarm_rate: (m.TP + m.FP) ? m.FP / (m.TP + m.FP) : 0,
+        mean_delay_s: axisScale === "time" ? meanDelay(m.delays)/1000 : meanDelay(m.delays)
+      });
+
+      return {
+        axisScale,
+        T2: { ...toSummary(mT2), details: mT2 },
+        Q:  { ...toSummary(mQ),  details: mQ  },
+        counts: { expected: gtNorm.length, detected_T2: detT2.length, detected_Q: detQ.length },
+        _gtNorm: gtNorm // pass through for time-based
+      };
+    }
+
+    // ===== Registry for metrics (store time-based) =====
+    function saveMetrics(datasetId, metricsWindow, metricsTime) {
+      const key = "fault_metrics_registry";
+      const reg = JSON.parse(localStorage.getItem(key) || "{}");
+      // Store both, but we will export the *time-based* metrics
+      reg[datasetId] = {
+        window: metricsWindow,
+        time: metricsTime   // { axisScale, unit, T2:{...}, Q:{...} }
+      };
+      localStorage.setItem(key, JSON.stringify(reg));
+    }
+
+    // Export *time-based* metrics to CSV with formatted percentages like the example
+    function exportMetricsCSV() {
+      const key = "fault_metrics_registry";
+      const reg = JSON.parse(localStorage.getItem(key) || "{}");
+
+      // CSV header
+      const rows = [["dataset_id","stat","precision","recall","fp_time"]];
+
+      for (const [ds, entry] of Object.entries(reg)) {
+        if (!entry || !entry.time) continue;
+        const unit = entry.time.unit || "units";
+
+        // Helper to format one stat (T2 or Q)
+        const pushRow = (label, tb) => {
+          if (!tb) return;
+          const precisionStr = `${(tb.precision_time*100).toFixed(1)}%`;
+          const recallStr    = `${(tb.recall_time*100).toFixed(1)}%`;
+          const fpStr        = `${tb.fp_time.toFixed(1)} ${unit} (${(tb.fp_frac*100).toFixed(1)}%)`;
+          rows.push([ds, label, precisionStr, recallStr, fpStr]);
+        };
+
+        pushRow("T2", entry.time.T2);
+        pushRow("Q",  entry.time.Q);
+      }
+
+      const csv = rows.map(r => r.join(",")).join("\n");
+      const blob = new Blob([csv], {type: "text/csv"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "fault_time_based_metrics.csv"; a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    /* ========= Time-based metrics helpers ========= */
+    function toScalar(x, axisScale) {
+      if (axisScale === "time") return (new Date(x)).getTime();
+      return Number(x);
+    }
+    function mergeIntervals(intervals) {
+      if (!intervals.length) return [];
+      const sorted = intervals.slice().sort((a,b)=> a.s - b.s || a.e - b.e);
+      const out = [sorted[0]];
+      for (let i=1;i<sorted.length;i++){
+        const last = out[out.length-1];
+        const cur = sorted[i];
+        if (cur.s <= last.e) {
+          last.e = Math.max(last.e, cur.e);
+        } else {
+          out.push({s: cur.s, e: cur.e});
+        }
+      }
+      return out;
+    }
+    function intervalsLen(intervals) {
+      return intervals.reduce((acc, iv)=> acc + Math.max(0, iv.e - iv.s), 0);
+    }
+    function intersectionsLen(A, B) {
+      let i=0, j=0, sum=0;
+      while (i<A.length && j<B.length) {
+        const a = A[i], b = B[j];
+        const s = Math.max(a.s, b.s);
+        const e = Math.min(a.e, b.e);
+        if (e > s) sum += (e - s);
+        if (a.e < b.e) i++; else j++;
+      }
+      return sum;
+    }
+    function computeTimeBasedForStat(detectedWins, gtNorm, axisScale) {
+      const detIntervals = mergeIntervals(detectedWins.map(w => ({
+        s: toScalar(w.sX, axisScale),
+        e: toScalar(w.eX, axisScale)
+      })).filter(iv => isFinite(iv.s) && isFinite(iv.e) && iv.e > iv.s));
+
+      const gtIntervals = mergeIntervals(gtNorm.map(w => ({ s: w.scalar.s, e: w.scalar.e })));
+
+      const det_len = intervalsLen(detIntervals);
+      const gt_len  = intervalsLen(gtIntervals);
+      const overlap = intersectionsLen(detIntervals, gtIntervals);
+      const fp_time = Math.max(0, det_len - overlap);
+
+      const precision_time = det_len > 0 ? (overlap / det_len) : 0;
+      const recall_time    = gt_len  > 0 ? (overlap / gt_len)  : 0;
+      const fp_frac        = det_len > 0 ? (fp_time / det_len) : 0;
+
+      return { precision_time, recall_time, fp_time, fp_frac, overlap, det_len, gt_len };
+    }
+    /* ===== End helpers ===== */
+
     // === PT501 Predictions (no residuals) ===
     const yPred = (res.y_pred || []).map(r => r[j]);
     let yTrue = null;
     if (hasTruth) {
-      // Accept either shape: y_true[n] = value or array
       yTrue = res.y_true.map(row => Array.isArray(row) ? row[j] : row);
     }
 
-    const tracesPred = [{
-      x: t, y: yPred, mode: "lines", name: "PT501 Predicted", yaxis: "y1"
-    }];
+    const tracesPred = [{ x: t, y: yPred, mode: "lines", name: "PT501 Predicted", yaxis: "y1" }];
     if (hasTruth) {
       const n = Math.min(t.length, yPred.length, yTrue.length);
       tracesPred.push({
@@ -152,7 +360,7 @@
 
       const windowsT2  = findWindows(maskT2);
       const windowsQ   = findWindows(maskQ);
-      const windowsAny = findWindows(maskAny); // for the table/PDF
+      const windowsAny = findWindows(maskAny); // for the table/PDF (union)
 
       // 4) Traces
       const tracesCVA = [
@@ -169,7 +377,7 @@
       // 6) Shapes & annotations (shade only on the subplot that breaches)
       const shapes = [];
       const annotations = [];
-      const maxWindowsToDraw = 20;
+      const maxWindowsToDraw = Infinity;
 
       // T²-only shading on top subplot
       for (let k = 0; k < Math.min(maxWindowsToDraw, windowsT2.length); k++) {
@@ -230,33 +438,31 @@
         `<div class="mt-1">Q breach rate: <strong>${(rateQ*100).toFixed(2)}%</strong></div>`);
 
       // 9) Build ranges (union windows) using EXACT x-axis + correct duration
-      const faultRanges = windowsAny.map(([s, e]) => {
-        const x0 = tCVA[s];
-        const x1 = tCVA[e];
+      const windowsAnyUnion = windowsFromMask(tCVA, maskT2.map((v,i)=> v || maskQ[i]));
+      const faultRanges = windowsAnyUnion.map(w => {
+        const x0 = w.sX, x1 = w.eX;
 
-        // Duration = end - start
-        let durationSec = null;   // seconds (timestamps) or numeric delta (numeric axis)
+        // Duration = end - start (seconds if timestamps; raw delta if numeric)
+        let durationSec = null;
         let durationLabel = "—";
 
         const d0 = new Date(x0), d1 = new Date(x1);
         if (!isNaN(d0) && !isNaN(d1)) {
-          durationSec = (d1 - d0);           // seconds
+          durationSec = (d1 - d0) / 1000; // seconds
           durationLabel = durationSec.toFixed(1) + " s";
         } else if (isFinite(Number(x0)) && isFinite(Number(x1))) {
-          durationSec = Number(x1) - Number(x0);    // raw units from numeric axis
+          durationSec = Number(x1) - Number(x0);
           durationLabel = String(durationSec);
         }
 
+        const s = w.sIdx, e = w.eIdx;
         const T2seg = T2.slice(s, e + 1);
         const Qseg  = Q.slice(s, e + 1);
 
         return {
-          startIdx: s,
-          endIdx: e,
-          start: String(x0),       // exact x-axis values
-          end:   String(x1),
-          durationSec,
-          durationLabel,
+          startIdx: s, endIdx: e,
+          start: String(x0), end: String(x1),
+          durationSec, durationLabel,
           maxT2: Math.max(...T2seg),
           maxQ: Math.max(...Qseg)
         };
@@ -266,10 +472,82 @@
       window.ReportData = window.ReportData || {};
       window.ReportData.cva = {
         t: tCVA, T2, Q, T2_UCL, Q_UCL,
-        faultWindows: windowsAny,
+        faultWindows: windowsAnyUnion,
         faultRanges,
         maxT2, maxQ
       };
+
+      // === Evaluate against ground-truth (per-stat + time-based) ===
+      (async function evaluateAgainstGT() {
+        try {
+          const gtMap = await fetch("fault_ground_truth.json", { cache: "no-store" }).then(r => r.json());
+          const datasetId = String(res.dataset_id || "UNKNOWN");
+          const gtEntry = gtMap[datasetId];
+
+          if (!gtEntry || !Array.isArray(gtEntry.windows)) {
+            meta.insertAdjacentHTML("beforeend",
+              `<div class="mt-1 text-orange-400">No ground-truth windows found for dataset <b>${datasetId}</b>.</div>`);
+            return;
+          }
+
+          // Window-level metrics (TP/FP/FN)
+          const metrics = computeMetricsPerStat({ tCVA, maskT2, maskQ, gtWindows: gtEntry.windows });
+
+          // Time-based metrics
+          const detT2Wins = windowsFromMask(tCVA, maskT2);
+          const detQWins  = windowsFromMask(tCVA, maskQ);
+          const axisScale = metrics.axisScale;
+          const gtNorm = metrics._gtNorm;
+
+          const tbT2 = computeTimeBasedForStat(detT2Wins, gtNorm, axisScale);
+          const tbQ  = computeTimeBasedForStat(detQWins,  gtNorm, axisScale);
+
+          const unit = axisScale === "time" ? "s" : "units";
+
+          // Display summaries
+          meta.insertAdjacentHTML("beforeend",
+            `<div class="mt-2">
+               <div><b>Dataset:</b> ${datasetId}</div>
+               <div><b>T²</b> — DR: ${(metrics.T2.detection_rate*100).toFixed(1)}%, FAR: ${(metrics.T2.false_alarm_rate*100).toFixed(1)}%, Mean delay: ${metrics.T2.mean_delay_s.toFixed(2)} ${axisScale==="time"?"s":""}</div>
+               <div><b>Q</b>  — DR: ${(metrics.Q.detection_rate*100).toFixed(1)}%, FAR: ${(metrics.Q.false_alarm_rate*100).toFixed(1)}%, Mean delay: ${metrics.Q.mean_delay_s.toFixed(2)} ${axisScale==="time"?"s":""}</div>
+             </div>`);
+
+          meta.insertAdjacentHTML("beforeend",
+            `<div class="mt-2">
+               <div class="font-semibold">Time-based metrics</div>
+               <div><b>T²</b> — Precision: ${(tbT2.precision_time*100).toFixed(1)}%, Recall: ${(tbT2.recall_time*100).toFixed(1)}%, FP time: ${tbT2.fp_time.toFixed(1)} ${unit} (${(tbT2.fp_frac*100).toFixed(1)}%)</div>
+               <div><b>Q</b>  — Precision: ${(tbQ.precision_time*100).toFixed(1)}%, Recall: ${(tbQ.recall_time*100).toFixed(1)}%, FP time: ${tbQ.fp_time.toFixed(1)} ${unit} (${(tbQ.fp_frac*100).toFixed(1)}%)</div>
+             </div>`);
+
+          // Persist for PDF
+          window.ReportData.metrics = metrics;
+          window.ReportData.metrics_time = { axisScale, unit, T2: tbT2, Q: tbQ };
+          window.ReportData.datasetId = datasetId;
+
+          // Keep CSV export for window-level
+          saveMetrics(datasetId, metrics, { axisScale, unit, T2: tbT2, Q: tbQ });
+
+          if (!document.getElementById("btnExportCSV")) {
+          const btn = document.createElement("button");
+            btn.id = "btnExportCSV";
+            btn.className = "bg-teal-600 hover:bg-teal-700 text-white font-semibold py-2 px-4 rounded";
+            btn.textContent = "Export Time-based Metrics";
+            document.getElementById("btnReport").after(btn);
+            btn.addEventListener("click", exportMetricsCSV);
+          }
+        } catch (e) {
+          console.error("GT evaluation failed:", e);
+        }
+
+        if (!document.getElementById("btnClearCSV")) {
+          const clearBtn = document.createElement("button");
+          clearBtn.id = "btnClearCSV";
+          clearBtn.className = "bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2 px-4 rounded";
+          clearBtn.textContent = "Clear Saved Metrics";
+          document.getElementById("btnExportCSV").after(clearBtn);
+          clearBtn.addEventListener("click", clearAllMetrics);
+        }
+      })();
     })();
 
     // === Responsive resize ===
@@ -370,18 +648,35 @@
       doc.text(`T² exceeded UCL: ${t2Breach ? "Yes" : "No"} (UCL=${(cva.T2_UCL ?? "n/a")})`, 14, y); y += 5;
       doc.text(`Q exceeded UCL: ${qBreach ? "Yes" : "No"} (UCL=${(cva.Q_UCL ?? "n/a")})`, 14, y); y += 8;
 
-      // --- Recommendation (simple rules)
+      // --- Detection Metrics (window-level)
       doc.setFontSize(12); doc.setFont("helvetica","bold");
-      doc.text("2) Maintenance Recommendation", 14, y);
-      y += 6; doc.setFontSize(10); doc.setFont("helvetica","normal");
-      let rec = "System operating within control limits. No immediate action required.";
-      if (t2Breach && qBreach) rec = "Immediate inspection recommended — process anomaly detected (T² & Q exceeded).";
-      else if (t2Breach || qBreach) rec = "Potential drift detected — schedule maintenance check and monitor closely.";
-      const recLines = doc.splitTextToSize(rec, 182);
-      doc.text(recLines, 14, y);
-      y += 10 + recLines.length * 1.8;
+      doc.text("2) Detection Metrics (window-level)", 14, y); y += 6;
+      doc.setFontSize(10); doc.setFont("helvetica","normal");
+      const M = (window.ReportData.metrics || null);
+      if (M) {
+        const line = (name, s) => `${name}: TP=${s.TP}, FP=${s.FP}, FN=${s.FN}, DR=${(s.detection_rate*100).toFixed(1)}%, FAR=${(s.false_alarm_rate*100).toFixed(1)}%, Mean delay=${Number(s.mean_delay_s).toFixed(2)}${M.axisScale==="time"?"s":""}`;
+        doc.text(`Dataset: ${window.ReportData.datasetId || "-"}`, 14, y); y += 5;
+        doc.text(line("T²", M.T2), 14, y); y += 5;
+        doc.text(line("Q",  M.Q),  14, y); y += 8;
+      } else {
+        doc.text("Ground-truth not available for this dataset.", 14, y); y += 8;
+      }
 
-      // --- Abnormal windows table
+      // --- Time-based Metrics
+      doc.setFontSize(12); doc.setFont("helvetica","bold");
+      doc.text("2b) Time-based Metrics", 14, y); y += 6;
+      doc.setFontSize(10); doc.setFont("helvetica","normal");
+      const MT = window.ReportData.metrics_time || null;
+      if (MT) {
+        const unit = MT.unit || "units";
+        const fmt = (tb) => `Precision=${(tb.precision_time*100).toFixed(1)}%, Recall=${(tb.recall_time*100).toFixed(1)}%, FP time=${tb.fp_time.toFixed(1)} ${unit} (${(tb.fp_frac*100).toFixed(1)}%)`;
+        doc.text(`T² — ${fmt(MT.T2)}`, 14, y); y += 5;
+        doc.text(`Q  — ${fmt(MT.Q)}`, 14, y); y += 8;
+      } else {
+        doc.text("Time-based metrics not available.", 14, y); y += 8;
+      }
+
+      // --- Abnormal windows table (union)
       doc.setFontSize(12); doc.setFont("helvetica","bold");
       doc.text("3) Abnormal Time Windows (exceeded threshold)", 14, y);
       y += 6; doc.setFontSize(10); doc.setFont("helvetica","normal");
@@ -399,9 +694,8 @@
         const r = rows[idx];
         if (y > 270) { doc.addPage(); y = 20; }
         doc.text(String(idx + 1), 14 + 2, y);
-        doc.text(String(r.start), 14 + 20 + 2, y);           // exact x-axis value
-        doc.text(String(r.end),   14 + 20 + 60 + 2, y);      // exact x-axis value
-        // Duration column:
+        doc.text(String(r.start), 14 + 20 + 2, y);
+        doc.text(String(r.end),   14 + 20 + 60 + 2, y);
         doc.text(r.durationLabel || "—", 14 + 20 + 60 + 60 + 2, y);
         doc.text(`${(r.maxT2 ?? 0).toFixed(2)} / ${(r.maxQ ?? 0).toFixed(2)}`, 14 + 20 + 60 + 60 + 22 + 2, y);
         y += 6;
@@ -413,16 +707,12 @@
       doc.text("4) Diagnostic Charts", 14, 16);
       doc.setFont("helvetica","normal"); doc.setFontSize(10);
 
-      // Export current Plotly state as PNGs (what the user currently sees)
       const predsPNG = await plotToPNG("plot-preds", 2);
       const cvaPNG   = await plotToPNG("plot-cva", 2);
       let shapPNG = null;
       const shapEl = document.getElementById("plot-shap");
-      if (shapEl && shapEl.data) {
-        shapPNG = await plotToPNG("plot-shap", 2);
-      }
+      if (shapEl && shapEl.data) shapPNG = await plotToPNG("plot-shap", 2);
 
-      // Place images (fit width ~180mm)
       let imgY = 22;
       const imgW = 180, imgH = 80;
       doc.addImage(predsPNG, "PNG", 14, imgY, imgW, imgH); imgY += imgH + 6;
@@ -436,11 +726,13 @@
       doc.save("Maintenance_Report_PT501.pdf");
     });
 
+    
+
+    // Logout
     document.getElementById("logoutBtn").addEventListener("click", () => {
       localStorage.removeItem("loggedInUser");
       window.location.href = "index.html";
     });
-    </script>
   </script>
 </body>
 </html>

@@ -7,15 +7,12 @@
   <style>
     /* Sidebar independent scroll */
     #historySidebar {
-      max-height: 90vh; /* prevents full-page scroll */
+      max-height: 90vh;
       overflow-y: auto;
       scrollbar-width: thin;
       scrollbar-color: rgba(255,255,255,0.4) transparent;
     }
-
-    #historySidebar::-webkit-scrollbar {
-      width: 8px;
-    }
+    #historySidebar::-webkit-scrollbar { width: 8px; }
     #historySidebar::-webkit-scrollbar-thumb {
       background-color: rgba(255,255,255,0.4);
       border-radius: 4px;
@@ -28,7 +25,6 @@
 <body class="h-screen w-screen bg-gradient-to-br from-gray-800 to-black flex justify-center items-center">
 
   <div class="flex w-full max-w-6xl bg-white/10 backdrop-blur-md rounded-3xl overflow-hidden">
-    
     <!-- LEFT: Upload section -->
     <div class="flex-1 p-10 text-center">
       <div class="flex justify-between items-center mb-4">
@@ -42,6 +38,63 @@
       </div>
 
       <h2 class="text-2xl font-bold text-white mb-6">Upload CSV File</h2>
+
+      <!-- Dataset ID picker -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-left mb-4">
+        <div>
+          <label class="block text-white/90 text-sm mb-1">Dataset ID</label>
+          <select id="datasetId" class="w-full bg-white/20 text-white rounded-lg p-2 outline-none">
+            <option value="">Select dataset…</option>
+            <optgroup label="Trials">
+              <option value="T1">T1</option>
+              <option value="T2">T2</option>
+              <option value="T3">T3</option>
+            </optgroup>
+            <optgroup label="Group 1">
+              <option value="1">1</option>
+              <option value="1.1">1.1</option>
+              <option value="1.2">1.2</option>
+              <option value="1.3">1.3</option>
+            </optgroup>
+            <optgroup label="Group 2">
+              <option value="2">2</option>
+              <option value="2.1">2.1</option>
+              <option value="2.2">2.2</option>
+              <option value="2.3">2.3</option>
+            </optgroup>
+            <optgroup label="Group 3">
+              <option value="3">3</option>
+              <option value="3.1">3.1</option>
+              <option value="3.2">3.2</option>
+              <option value="3.3">3.3</option>
+            </optgroup>
+            <optgroup label="Group 4">
+              <option value="4">4</option>
+              <option value="4.1">4.1</option>
+              <option value="4.2">4.2</option>
+              <option value="4.3">4.3</option>
+            </optgroup>
+            <optgroup label="Group 5">
+              <option value="5">5</option>
+              <option value="5.1">5.1</option>
+              <option value="5.2">5.2</option>
+            </optgroup>
+            <optgroup label="Group 6">
+              <option value="6">6</option>
+              <option value="6.1">6.1</option>
+              <option value="6.2">6.2</option>
+            </optgroup>
+            <option value="_OTHER_">Other…</option>
+          </select>
+        </div>
+        <div id="customIdWrap" class="hidden">
+          <label class="block text-white/90 text-sm mb-1">Custom Dataset ID</label>
+          <input id="customDatasetId" type="text" placeholder="e.g., 5.2c or TEST_A"
+                 class="w-full bg-white/20 text-white rounded-lg p-2 outline-none"
+          />
+          <p class="text-xs text-white/60 mt-1">This will be used to match entries in <code>fault_ground_truth.json</code>.</p>
+        </div>
+      </div>
 
       <div id="dropZone"
         class="bg-white/20 border-2 border-dashed border-white/50 rounded-xl p-10 text-white mb-4 cursor-pointer"
@@ -91,9 +144,31 @@
     const dropZone = document.getElementById("dropZone");
     const browseBtn = document.getElementById("browseBtn");
     const uploadStatus = document.getElementById("uploadStatus");
+    const datasetIdSelect = document.getElementById("datasetId");
+    const customIdWrap = document.getElementById("customIdWrap");
+    const customDatasetId = document.getElementById("customDatasetId");
 
     // ===== API config =====
     const API_URL = "http://127.0.0.1:8000/predict"; // change for deployment
+
+    // Try to infer dataset id from filename like "5.csv", "5.1.csv", "T2.csv"
+    function inferIdFromFilename(name) {
+      const base = (name || "").split('.')[0];
+      const m = base.match(/^(T\d+|\d+(?:\.\d+)?)/i); // T#, or N or N.N
+      return m ? m[0].toUpperCase() : "";
+    }
+
+    // Sync UI visibility for "Other…" custom input
+    function syncCustomInputVisibility() {
+      const v = datasetIdSelect.value;
+      if (v === "_OTHER_") {
+        customIdWrap.classList.remove("hidden");
+        if (!customDatasetId.value.trim()) customDatasetId.focus();
+      } else {
+        customIdWrap.classList.add("hidden");
+      }
+    }
+    datasetIdSelect.addEventListener("change", syncCustomInputVisibility);
 
     async function postFileToAPI(file) {
       const formData = new FormData();
@@ -115,17 +190,64 @@
       return res.json();
     }
 
+    function getChosenDatasetId(filename) {
+      // 1) If user picked a value:
+      const sel = datasetIdSelect.value;
+      if (sel === "_OTHER_") {
+        const custom = (customDatasetId.value || "").trim();
+        if (!custom) {
+          alert("Please enter a custom Dataset ID.");
+          throw new Error("Missing custom dataset id");
+        }
+        return custom;
+      } else if (sel) {
+        return sel;
+      }
+
+      // 2) Else try to infer from filename:
+      const inferred = inferIdFromFilename(filename);
+      if (inferred) {
+        // preselect for the user next time
+        datasetIdSelect.value = inferred;
+        return inferred;
+      }
+
+      // 3) As a final fallback, prompt:
+      const manual = prompt("Enter dataset id (e.g., 5, 5.1, T2):");
+      return (manual || "UNKNOWN");
+    }
+
     async function handleFile(file) {
       if (!file) return;
       if (!file.name.toLowerCase().endsWith(".csv")) {
         uploadStatus.innerHTML = `<span class="text-yellow-300">Please upload a .csv file.</span>`;
         return;
       }
+
+      // Pre-fill the dataset picker from filename (non-blocking)
+      const inferred = inferIdFromFilename(file.name);
+      if (inferred && !datasetIdSelect.value) {
+        // Only prefill if user didn't choose yet
+        const opt = Array.from(datasetIdSelect.options).find(o => o.value.toUpperCase() === inferred);
+        datasetIdSelect.value = opt ? opt.value : "_OTHER_";
+        if (!opt) {
+          customIdWrap.classList.remove("hidden");
+          customDatasetId.value = inferred;
+        }
+      }
+      syncCustomInputVisibility();
+
       try {
         const result = await postFileToAPI(file);
+
+        // Choose dataset id (prefer user's choice, else inferred/prompt)
+        const datasetId = getChosenDatasetId(file.name);
+        result.dataset_id = datasetId;
+
         uploadStatus.innerHTML = `<span class="text-green-400 font-semibold">${file.name} processed successfully. Redirecting…</span>`;
+
         sessionStorage.setItem("predictionResult", JSON.stringify(result));
-        saveToHistory(file.name, result);
+        saveToHistory(file.name, result, datasetId);
         window.location.href = "prediction.html";
       } catch (err) {
         uploadStatus.innerHTML = `<div class="text-red-400 mt-2 break-words">Error: ${err.message}</div>`;
@@ -161,10 +283,11 @@
       history.forEach((item, i) => {
         const li = document.createElement("li");
         li.className = "bg-white/10 p-3 rounded-lg hover:bg-white/20 transition";
+        const dsid = (item.result?.dataset_id) ? `<span class="ml-2 text-xs text-gray-300">[${item.result.dataset_id}]</span>` : "";
         li.innerHTML = `
           <div class="flex justify-between items-center">
             <div class="flex-1 min-w-0">
-              <p class="font-semibold truncate">${item.filename}</p>
+              <p class="font-semibold truncate">${item.filename} ${dsid}</p>
               <p class="text-xs text-gray-300">${item.date}</p>
             </div>
             <div class="flex gap-1 ml-2 shrink-0">
@@ -203,12 +326,12 @@
           const history = JSON.parse(localStorage.getItem(historyKey) || "[]");
           history.splice(index, 1);
           localStorage.setItem(historyKey, JSON.stringify(history));
-          loadHistory(); // re-render
+          loadHistory();
         });
       });
     }
 
-    function saveToHistory(filename, result) {
+    function saveToHistory(filename, result, datasetId) {
       const username = localStorage.getItem("loggedInUser");
       const historyKey = `history_${username}`;
       const history = JSON.parse(localStorage.getItem(historyKey) || "[]");
@@ -216,7 +339,7 @@
       const entry = {
         filename,
         date: new Date().toLocaleString(),
-        result
+        result: { ...result, dataset_id: datasetId }
       };
 
       history.unshift(entry);
