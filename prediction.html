@@ -1,4 +1,3 @@
-<!-- prediction.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -16,6 +15,13 @@
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 </head>
 <body class="min-h-screen bg-gray-900 text-white p-6">
+ <!-- Top bar with logout button -->
+  <div class="flex justify-end mb-4">
+    <button id="logoutBtn"
+      class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded">
+      Logout
+    </button>
+  </div>
   <div class="max-w-6xl mx-auto">
     <h1 class="text-2xl font-bold mb-4">
       Prediction Results (PT501 - Pressure in 3 Phase Separator (MPA))
@@ -25,7 +31,6 @@
 
     <div id="plot-preds" class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[500px]"></div>
     <div id="plot-cva"   class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[600px]"></div>
-
     <!-- Contribution plot (with % toggle) -->
     <div class="bg-gray-800 rounded-xl p-4 mb-6 w-full">
       <div class="flex items-center justify-between mb-2">
@@ -56,402 +61,592 @@
   </div>
 
   <script>
-    // ===== API base (same-origin in prod, localhost in dev) =====
-    const API_BASE = (location.hostname === "localhost" || location.hostname === "127.0.0.1")
-      ? "http://127.0.0.1:8000"
-      : ""; // same-origin on Render
-
-    async function loadResult() {
-      try {
-        const r = await fetch(`${API_BASE}/result/latest`, { cache: "no-store" });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return await r.json();
-      } catch (e) {
-        alert("No prediction data found. Please upload a CSV first.");
-        window.location.href = "upload.html";
-        throw e;
-      }
+    // === Load prediction results saved by upload.html ===
+    const res = JSON.parse(sessionStorage.getItem("predictionResult") || "null");
+    if (!res) {
+      alert("No prediction data found. Please upload a CSV first.");
+      window.location.href = "upload.html";
     }
 
-    // All render logic is inside this IIFE after we fetch the result from the server cache
-    (async () => {
-      const res = await loadResult();
-
-      // === Find PT501 index
-      const targetName = "PT501";
-      const j = Array.isArray(res.targets) ? res.targets.indexOf(targetName) : -1;
-      if (j === -1) {
-        document.getElementById("meta").innerHTML =
-          `<div class="text-red-400">Error: PT501 not found in model targets.</div>`;
-        throw new Error("PT501 not in targets");
-      }
-
-      const t = res.time_index || [];
-      const hasTruth = Array.isArray(res.y_true) && res.y_true.length > 0;
-
-      // === Meta info
-      const meta = document.getElementById("meta");
-      meta.innerHTML = `
-        <div>Target variable: <code>${targetName}</code> (MPa)</div>
-        ${hasTruth ? "" : "<div class='text-yellow-400 mt-1'>No ground-truth values — predictions only.</div>"}
-      `;
-
-      // === Plot configs
-      const baseLayout = {
-        margin: { t: 40, r: 20, b: 50, l: 50 },
-        hovermode: "x unified",
-        dragmode: "pan",
-        uirevision: true,
-        legend: { orientation: "h", y: -0.2, font: { size: 11 } }
-      };
-      const baseConfig = {
-        responsive: true, displaylogo: false, scrollZoom: true,
-        modeBarButtonsToRemove: [
-          "select2d","lasso2d","zoom","zoomIn2d","zoomOut2d","autoScale2d","resetScale2d","toggleSpikelines"
-        ]
+    // --- Helper: make short human explanations for variable names ---
+    function explainVar(name) {
+      const table = {
+        PT501: "Pressure in 3 phase separator (MPa)",
+        FT305: "Flow rate input air (Sm³/s)",
+        FT104: "Flow rate input water (kg/s)",
+        FT104_density: "Density of water input (kg/m³)",
+        FT104_temp: "Temperature of water input (°C)",
+        FT407: "Flow rate at top riser (kg/s)",
+        FT407_density: "Density at top riser (kg/m³)",
+        FT407_temp: "Temperature at top riser (°C)",
+        LI504: "Level of gas-liquid 3 phase separator (%)",
+        VC501: "Position of valve VC501 (%)",
+        PT312: "Air delivery pressure (MPa)",
+        PT401: "Pressure at the bottom of the riser (MPa)",
+        PT408: "Pressure at the top of the riser (MPa)",
+        PT403: "Pressure at the top separator (MPa)",
+        PT408_diff: "Differential pressure (PT401 - PT408) (MPa)",
+        PT403_diff: "Differential pressure over VC404 (MPa)",
+        LI405: "Level in top separator (m)",
+        FT406: "Flow rate top separator output (kg/s)",
+        FT406_density: "Density at top separator output (kg/m³)",
+        FT406_temp: "Temperature at top separator output (°C)",
+        FT407_temp: "Temperature at top riser (°C)",
+        VC302: "Position of valve VC302 (%)",
+        VC101: "Position of valve VC101 (%)",
+        PO1: "Water pump current (A)"
       };
 
-      // === Predictions plot
-      const yPred = (res.y_pred || []).map(r => r[j]);
-      let yTrue = null;
-      if (hasTruth) yTrue = res.y_true.map(row => Array.isArray(row) ? row[j] : row);
+      if (table[name]) return table[name];
+      // fallback for anything not listed
+      return "Process variable (unlisted in reference table)";
+    }
 
-      const tracesPred = [{ x: t, y: yPred, mode: "lines", name: "PT501 Predicted", yaxis: "y1" }];
-      if (hasTruth) {
-        const n = Math.min(t.length, yPred.length, yTrue.length);
-        tracesPred.push({ x: t.slice(0, n), y: yTrue.slice(0, n), mode: "lines", name: "PT501 Actual", yaxis: "y1" });
+    // Find PT501 index
+    const targetName = "PT501";
+    const j = Array.isArray(res.targets) ? res.targets.indexOf(targetName) : -1;
+    if (j === -1) {
+      document.getElementById("meta").innerHTML =
+        `<div class="text-red-400">Error: PT501 not found in model targets.</div>`;
+      throw new Error("PT501 not in targets");
+    }
+
+    const t = res.time_index || [];
+    const hasTruth = Array.isArray(res.y_true) && res.y_true.length > 0;
+
+    // === Meta info ===
+    const meta = document.getElementById("meta");
+    meta.innerHTML = `
+      <div>Target variable: <code>${targetName}</code> (MPa)</div>
+      ${hasTruth ? "" : "<div class='text-yellow-400 mt-1'>No ground-truth values — predictions only.</div>"}
+    `;
+
+    // === Plot configs ===
+    const baseLayout = {
+      margin: { t: 40, r: 20, b: 50, l: 50 },
+      hovermode: "x unified",
+      dragmode: "pan",
+      uirevision: true,
+      legend: { orientation: "h", y: -0.2, font: { size: 11 } }
+    };
+    const baseConfig = {
+      responsive: true, displaylogo: false, scrollZoom: true,
+      modeBarButtonsToRemove: [
+        "select2d","lasso2d","zoom","zoomIn2d","zoomOut2d","autoScale2d","resetScale2d","toggleSpikelines"
+      ]
+    };
+
+    // === PT501 Predictions (no residuals) ===
+    const yPred = (res.y_pred || []).map(r => r[j]);
+    let yTrue = null;
+    if (hasTruth) {
+      // Accept either shape: y_true[n] = value or array
+      yTrue = res.y_true.map(row => Array.isArray(row) ? row[j] : row);
+    }
+
+    const tracesPred = [{
+      x: t, y: yPred, mode: "lines", name: "PT501 Predicted", yaxis: "y1"
+    }];
+    if (hasTruth) {
+      const n = Math.min(t.length, yPred.length, yTrue.length);
+      tracesPred.push({
+        x: t.slice(0, n), y: yTrue.slice(0, n),
+        mode: "lines", name: "PT501 Actual", yaxis: "y1"
+      });
+    }
+
+    Plotly.newPlot("plot-preds", tracesPred, {
+      ...baseLayout,
+      title: hasTruth ? "PT501: Predicted vs Actual" : "Predicted PT501",
+      yaxis: { title: "Value (MPa)" }
+    }, baseConfig);
+
+    // Keep a global to assemble the report later
+    window.ReportData = {};
+
+    // === CVA plot (shade per-plot only where that metric exceeds its threshold) ===
+    (() => {
+      // 1) Raw arrays
+      let tCVA = (res.cva?.t || []).slice();
+      let T2   = (res.cva?.T2 || []).slice();
+      let Q    = (res.cva?.Q  || []).slice();
+      const T2_UCL = Number(res.cva?.T2_UCL ?? 0);
+      const Q_UCL  = Number(res.cva?.Q_UCL  ?? 0);
+
+      if (!tCVA.length || !T2.length || !Q.length) {
+        document.getElementById("plot-cva").innerHTML =
+          "<div class='text-yellow-400'>CVA not available (missing arrays or UCLs).</div>";
+        return;
       }
-      Plotly.newPlot("plot-preds", tracesPred, {
+
+      // 2) Burn-in (first samples spike due to block formation)
+      const burnIn = Math.min(50, T2.length - 1);
+      if (burnIn > 0) {
+        tCVA = tCVA.slice(burnIn);
+        T2   = T2.slice(burnIn);
+        Q    = Q.slice(burnIn);
+      }
+
+      // 3) Masks and windows
+      const maskT2  = T2.map(v => v > T2_UCL);
+      const maskQ   = Q.map(v => v > Q_UCL);
+      const maskAny = maskT2.map((v,i) => v || maskQ[i]);
+
+      function findWindows(mask) {
+        const wins = [];
+        let i = 0;
+        while (i < mask.length) {
+          if (mask[i]) {
+            const s = i;
+            while (i < mask.length && mask[i]) i++;
+            wins.push([s, i - 1]);
+          } else i++;
+        }
+        return wins;
+      }
+
+      const windowsT2  = findWindows(maskT2);
+      const windowsQ   = findWindows(maskQ);
+      const windowsAny = findWindows(maskAny); // for the table/PDF
+
+      // 4) Traces
+      const tracesCVA = [
+        { x: tCVA, y: T2, mode: "lines", name: "T²", xaxis: "x",  yaxis: "y"  },
+        { x: tCVA, y: tCVA.map(() => T2_UCL), mode: "lines", name: "T² UCL", line: { dash: "dash" }, xaxis: "x",  yaxis: "y"  },
+        { x: tCVA, y: Q,  mode: "lines", name: "Q",  xaxis: "x2", yaxis: "y2" },
+        { x: tCVA, y: tCVA.map(() => Q_UCL),  mode: "lines", name: "Q UCL",  line: { dash: "dash" }, xaxis: "x2", yaxis: "y2" }
+      ];
+
+      // 5) Axis ranges (cap for readability)
+      const capT2 = 1e4, capQ = 1e4;
+      const maxT2 = Math.max(...T2), maxQ = Math.max(...Q);
+
+      // 6) Shapes & annotations (shade only on the subplot that breaches)
+      const shapes = [];
+      const annotations = [];
+      const maxWindowsToDraw = 20;
+
+      // T²-only shading on top subplot
+      for (let k = 0; k < Math.min(maxWindowsToDraw, windowsT2.length); k++) {
+        const [s, e] = windowsT2[k];
+        const x0 = tCVA[s], x1 = tCVA[e];
+
+        shapes.push(
+          { type: "rect", xref: "x", yref: "paper", x0, x1, y0: 0.52, y1: 0.98, fillcolor: "rgba(255,99,71,0.15)", line: { width: 0 } },
+          { type: "line", xref: "x", yref: "y", x0, x1: x0, y0: 0, y1: Math.min(capT2, maxT2*1.1), line: { color: "tomato", width: 1, dash: "dot" } },
+          { type: "line", xref: "x", yref: "y", x0: x1, x1, y0: 0, y1: Math.min(capT2, maxT2*1.1), line: { color: "tomato", width: 1, dash: "dot" } }
+        );
+
+        annotations.push(
+          { x: x0, y: Math.min(capT2, maxT2*1.15), xref: "x", yref: "y", text: "Fault Start", showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" },
+          { x: x1, y: Math.min(capT2, maxT2*1.15), xref: "x", yref: "y", text: "Fault End", showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" }
+        );
+      }
+
+      // Q-only shading on bottom subplot
+      for (let k = 0; k < Math.min(maxWindowsToDraw, windowsQ.length); k++) {
+        const [s, e] = windowsQ[k];
+        const x0 = tCVA[s], x1 = tCVA[e];
+
+        shapes.push(
+          { type: "rect", xref: "x2", yref: "paper", x0, x1, y0: 0.02, y1: 0.48, fillcolor: "rgba(255,99,71,0.15)", line: { width: 0 } },
+          { type: "line", xref: "x2", yref: "y2", x0, x1: x0, y0: 0, y1: Math.min(capQ, maxQ*1.1), line: { color: "tomato", width: 1, dash: "dot" } },
+          { type: "line", xref: "x2", yref: "y2", x0: x1, x1, y0: 0, y1: Math.min(capQ, maxQ*1.1), line: { color: "tomato", width: 1, dash: "dot" } }
+        );
+
+        annotations.push(
+          { x: x0, y: Math.min(capQ, maxQ*1.15), xref: "x2", yref: "y2", text: "Fault Start", showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" },
+          { x: x1, y: Math.min(capQ, maxQ*1.15), xref: "x2", yref: "y2", text: "Fault End", showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" }
+        );
+      }
+
+      // 7) Layout
+      const layoutCVA = {
         ...baseLayout,
-        title: hasTruth ? "PT501: Predicted vs Actual" : "Predicted PT501",
-        yaxis: { title: "Value (MPa)" }
-      }, baseConfig);
+        title: "CVA Indices (Raw)",
+        height: 600,
+        grid: { rows: 2, columns: 1, pattern: "independent" },
+        xaxis:  { title: "Time" },
+        yaxis:  { title: "Hotelling T²", range: [0, Math.min(capT2, maxT2*1.2)] },
+        xaxis2: { title: "Time" },
+        yaxis2: { title: "Squared Prediction Error Q", range: [0, Math.min(capQ, maxQ*1.2)] },
+        shapes,
+        annotations
+      };
 
-      // Keep for report
-      window.ReportData = {};
+      Plotly.newPlot("plot-cva", tracesCVA, layoutCVA, baseConfig);
 
-      // === CVA plot + windows
-      (function renderCVA() {
-        let tCVA = (res.cva?.t || []).slice();
-        let T2   = (res.cva?.T2 || []).slice();
-        let Q    = (res.cva?.Q  || []).slice();
-        const T2_UCL = Number(res.cva?.T2_UCL ?? 0);
-        const Q_UCL  = Number(res.cva?.Q_UCL  ?? 0);
+      // 8) Breach rates (separate)
+      const rateT2 = maskT2.length ? maskT2.filter(Boolean).length / maskT2.length : 0;
+      const rateQ  = maskQ.length  ? maskQ.filter(Boolean).length  / maskQ.length  : 0;
+      meta.insertAdjacentHTML("beforeend",
+        `<div class="mt-1">T² breach rate: <strong>${(rateT2*100).toFixed(2)}%</strong></div>`);
+      meta.insertAdjacentHTML("beforeend",
+        `<div class="mt-1">Q breach rate: <strong>${(rateQ*100).toFixed(2)}%</strong></div>`);
 
-        if (!tCVA.length || !T2.length || !Q.length) {
-          document.getElementById("plot-cva").innerHTML =
-            "<div class='text-yellow-400'>CVA not available (missing arrays or UCLs).</div>";
-          return;
-        }
-
-        const burnIn = Math.min(50, T2.length - 1);
-        if (burnIn > 0) {
-          tCVA = tCVA.slice(burnIn);
-          T2   = T2.slice(burnIn);
-          Q    = Q.slice(burnIn);
-        }
-
-        const maskT2  = T2.map(v => v > T2_UCL);
-        const maskQ   = Q.map(v => v > Q_UCL);
-        const maskAny = maskT2.map((v,i) => v || maskQ[i]);
-
+      // union windows with exact x values for report
+      const faultRanges = (function buildRanges() {
         function findWindows(mask) {
-          const wins = []; let i = 0;
+          const arr = []; let i=0;
           while (i < mask.length) {
-            if (mask[i]) { const s=i; while (i<mask.length && mask[i]) i++; wins.push([s, i-1]); }
+            if (mask[i]) { const s=i; while (i<mask.length && mask[i]) i++; arr.push([s,i-1]); }
             else i++;
           }
-          return wins;
+          return arr;
         }
-        const windowsT2  = findWindows(maskT2);
-        const windowsQ   = findWindows(maskQ);
-        const windowsAny = findWindows(maskAny);
+        const wins = findWindows(maskAny);
+        return wins.map(([s,e])=>{
+          const x0=tCVA[s], x1=tCVA[e];
+          let durationLabel="—";
+          const d0=new Date(x0), d1=new Date(x1);
+          if (!isNaN(d0) && !isNaN(d1)) durationLabel=((d1-d0)).toFixed(1)+" s";
+          else if (isFinite(Number(x0)) && isFinite(Number(x1))) durationLabel=String(Number(x1)-Number(x0));
+          return {
+            startIdx:s, endIdx:e, start:String(x0), end:String(x1),
+            durationLabel, maxT2:Math.max(...T2.slice(s,e+1)), maxQ:Math.max(...Q.slice(s,e+1))
+          };
+        });
+      })();
 
-        const tracesCVA = [
-          { x: tCVA, y: T2, mode: "lines", name: "T²", xaxis: "x",  yaxis: "y"  },
-          { x: tCVA, y: tCVA.map(() => T2_UCL), mode: "lines", name: "T² UCL", line: { dash: "dash" }, xaxis: "x",  yaxis: "y"  },
-          { x: tCVA, y: Q,  mode: "lines", name: "Q",  xaxis: "x2", yaxis: "y2" },
-          { x: tCVA, y: tCVA.map(() => Q_UCL),  mode: "lines", name: "Q UCL",  line: { dash: "dash" }, xaxis: "x2", yaxis: "y2" }
-        ];
+      window.ReportData.cva = { t: tCVA, T2, Q, T2_UCL, Q_UCL, faultRanges };
+      // default k*: first breach else argmax normalized
+      const T2N = T2_UCL ? T2.map(v=>v/T2_UCL) : T2;
+      const QN  = Q_UCL  ? Q.map(v=>v/Q_UCL)   : Q;
+      let kStar = -1;
+      for (let i=0;i<T2.length;i++){ if (T2N[i]>1 || QN[i]>1){ kStar=i; break; } }
+      if (kStar<0) {
+        let best=-Infinity, arg=0;
+        for (let i=0;i/T2.length;i++){ /* no-op just placeholder */ }
+        for (let i=0;i<T2.length;i++){ const s=Math.max(T2N[i],QN[i]); if (s>=best){best=s; arg=i;} }
+        kStar=arg;
+      }
+      window.ReportData.contribAt = kStar;
+      document.getElementById("kSelect").value = kStar;
+    })();
 
-        const capT2 = 1e4, capQ = 1e4;
-        const maxT2 = Math.max(...T2), maxQ = Math.max(...Q);
+    // === Contribution plot (supports % toggle)
+    function renderContrib(kStar) {
+      const container = document.getElementById("plot-contrib");
+      const contrib = res.cva?.contrib;
+      if (!contrib) {
+        container.innerHTML = "<div class='text-yellow-400'>Contribution arrays not available.</div>";
+        return;
+      }
+      const names = contrib.features || [];
+      const Ctot  = contrib.C_total || []; // retained-space (can be signed)
+      const Cq    = contrib.C_q     || []; // residual Q (>=0)
+      if (!names.length || !Ctot.length) {
+        container.innerHTML = "<div class='text-yellow-400'>No contribution data.</div>";
+        return;
+      }
+      const m = names.length;
+      const N = (Ctot[0] || []).length;
+      if (kStar == null || isNaN(kStar) || kStar < 0) kStar = 0;
+      if (kStar >= N) kStar = N - 1;
 
-        const shapes = [], annotations = [];
-        const maxWindowsToDraw = 20;
+      // Magnitudes per variable at time k
+      const takeAbs = (M, k) => Array.from({length:m}, (_,j)=> Math.abs((M[j]||[])[k] || 0));
+      const vTotAbs = takeAbs(Ctot, kStar);  // retained |C|
+      const vQAbs   = takeAbs(Cq,   kStar);  // residual Q already nonneg
 
-        for (let k = 0; k < Math.min(maxWindowsToDraw, windowsT2.length); k++) {
-          const [s, e] = windowsT2[k];
-          const x0 = tCVA[s], x1 = tCVA[e];
-          shapes.push(
-            { type: "rect", xref: "x", yref: "paper", x0, x1, y0: 0.52, y1: 0.98, fillcolor: "rgba(255,99,71,0.15)", line: { width: 0 } },
-            { type: "line", xref: "x", yref: "y", x0, x1: x0, y0: 0, y1: Math.min(capT2, maxT2*1.1), line: { width: 1, dash: "dot" } },
-            { type: "line", xref: "x", yref: "y", x0: x1, x1, y0: 0, y1: Math.min(capT2, maxT2*1.1), line: { width: 1, dash: "dot" } }
-          );
-          annotations.push(
-            { x: x0, y: Math.min(capT2, maxT2*1.15), xref: "x", yref: "y", text: "Fault Start", showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { size: 12 } },
-            { x: x1, y: Math.min(capT2, maxT2*1.15), xref: "x", yref: "y", text: "Fault End",   showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { size: 12 } }
-          );
-        }
+      const asPercent = !!document.getElementById("asPercent")?.checked;
 
-        for (let k = 0; k < Math.min(maxWindowsToDraw, windowsQ.length); k++) {
-          const [s, e] = windowsQ[k];
-          const x0 = tCVA[s], x1 = tCVA[e];
-          shapes.push(
-            { type: "rect", xref: "x2", yref: "paper", x0, x1, y0: 0.02, y1: 0.48, fillcolor: "rgba(255,99,71,0.15)", line: { width: 0 } },
-            { type: "line", xref: "x2", yref: "y2", x0, x1: x0, y0: 0, y1: Math.min(capQ, maxQ*1.1), line: { width: 1, dash: "dot" } },
-            { type: "line", xref: "x2", yref: "y2", x0: x1, x1, y0: 0, y1: Math.min(capQ, maxQ*1.1), line: { width: 1, dash: "dot" } }
-          );
-          annotations.push(
-            { x: x0, y: Math.min(capQ, maxQ*1.15), xref: "x2", yref: "y2", text: "Fault Start", showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { size: 12 } },
-            { x: x1, y: Math.min(capQ, maxQ*1.15), xref: "x2", yref: "y2", text: "Fault End",   showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { size: 12 } }
-          );
-        }
+      // Convert to percent safely (avoid divide-by-zero)
+      function toPercent(vec) {
+        const s = vec.reduce((a,b)=>a+b, 0);
+        if (!isFinite(s) || s <= 0) return vec.map(() => 0);
+        return vec.map(v => 100 * v / s);
+      }
 
-        const layoutCVA = {
-          ...baseLayout,
-          title: "CVA Indices (Raw)",
-          height: 600,
-          grid: { rows: 2, columns: 1, pattern: "independent" },
-          xaxis:  { title: "Time" },
-          yaxis:  { title: "Hotelling T²", range: [0, Math.min(1e4, maxT2*1.2)] },
-          xaxis2: { title: "Time" },
-          yaxis2: { title: "Squared Prediction Error Q", range: [0, Math.min(1e4, maxQ*1.2)] },
-          shapes, annotations
-        };
-        Plotly.newPlot("plot-cva", tracesCVA, layoutCVA, baseConfig);
+      const valsTotRaw = vTotAbs;
+      const valsQRaw   = vQAbs;
+      const valsTot    = asPercent ? toPercent(valsTotRaw) : valsTotRaw;
+      const valsQ      = asPercent ? toPercent(valsQRaw)   : valsQRaw;
 
-        const rateT2 = maskT2.length ? maskT2.filter(Boolean).length / maskT2.length : 0;
-        const rateQ  = maskQ.length  ? maskQ.filter(Boolean).length  / maskQ.length  : 0;
-        meta.insertAdjacentHTML("beforeend", `<div class="mt-1">T² breach rate: <strong>${(rateT2*100).toFixed(2)}%</strong></div>`);
-        meta.insertAdjacentHTML("beforeend", `<div class="mt-1">Q breach rate: <strong>${(rateQ*100).toFixed(2)}%</strong></div>`);
+      // Rank by retained (or by percent if toggled)
+      const score = asPercent ? valsTot : valsTotRaw;
+      const order = score.map((v,i)=>[v,i]).sort((a,b)=> b[0]-a[0]).slice(0, Math.min(10,m)).map(x=>x[1]);
 
-        // union windows with exact x values for report
-        const faultRanges = (function buildRanges() {
-          function findWindows(mask) {
-            const arr = []; let i=0;
-            while (i < mask.length) {
-              if (mask[i]) { const s=i; while (i<mask.length && mask[i]) i++; arr.push([s,i-1]); }
-              else i++;
+      const labels  = order.map(i=> names[i]);
+      const xTot    = order.map(i=> valsTot[i]);
+      const xQ      = order.map(i=> valsQ[i]);
+
+      // === NEW: store Top-3 for the PDF report ===
+      const top3Idx = order.slice(0, 3);
+      const top3 = top3Idx.map(i => ({
+        name: names[i],
+        retained_abs: valsTotRaw[i],   // absolute retained contribution
+        residual_abs: valsQRaw[i],     // absolute residual (Q) contribution
+        note: explainVar(names[i])
+      }));
+      window.ReportData.top3 = { k: kStar, items: top3 };
+
+      const hoverVal = asPercent ? "%{x:.2f}%" : "%{x:.4g}";
+      const traces = [
+        { type:"bar", x: xTot, y: labels, name: "C (retained)", orientation: "h",
+          hovertemplate: "<b>%{y}</b><br>C (retained): "+hoverVal+"<extra></extra>" },
+        { type:"bar", x: xQ,   y: labels, name: "Residual (Q)", orientation: "h",
+          hovertemplate: "<b>%{y}</b><br>Residual Q: "+hoverVal+"<extra></extra>" }
+      ];
+      const layout = {
+        margin: { t: 40, r: 20, b: 40, l: 160 },
+        barmode: "group",
+        title: `Contribution (Top ${labels.length}) @ t=${kStar}` + (asPercent ? " — % of total" : ""),
+        xaxis: { title: asPercent ? "Share of total (%)" : "Magnitude (absolute)", range: asPercent ? [0, 100] : undefined }
+      };
+      Plotly.newPlot("plot-contrib", traces, layout, {responsive:true, displaylogo:false});
+
+      window.ReportData.contribAt = kStar;
+    }
+
+    // Initial contribution render
+    renderContrib((window.ReportData && window.ReportData.contribAt) ?? 0);
+
+    // Manual selection + % toggle
+    document.getElementById("btnApplyK").addEventListener("click", () => {
+      const v = parseInt(document.getElementById("kSelect").value, 10);
+      const k = isNaN(v) ? (window.ReportData?.contribAt ?? 0) : v;
+      renderContrib(k);
+    });
+    document.getElementById("asPercent").addEventListener("change", () => {
+      const k = window.ReportData?.contribAt ?? 0;
+      renderContrib(k);
+    });
+
+    // === SHAP feature importance (robust: from res, or JSON, else hide) ===
+    (async function renderSHAP() {
+      const shapDiv = document.getElementById("plot-shap");
+
+      function drawSHAP(items) {
+        const x = items.map(d => d.feature);
+        const y = items.map(d => d.score);
+        return Plotly.newPlot("plot-shap", [{
+          type: "bar", x, y, name: "Impact (mean |SHAP|)"
+        }], {
+          title: "Which sensors influence PT501 predictions?",
+          margin: { t: 40, r: 20, b: 80, l: 60 },
+          xaxis: { tickangle: -30 },
+          yaxis: { title: "Mean |SHAP| (aggregated over time)" },
+          paper_bgcolor: "#1f2937", plot_bgcolor: "#1f2937",
+          font: { color: "#fff" }
+        }, { responsive: true, displaylogo: false });
+      }
+
+      let items = null;
+
+      // Try 1: from session result
+      if (res?.shap?.feature_importance && Array.isArray(res.shap.feature_importance)) {
+        items = res.shap.feature_importance;
+      }
+
+      // Try 2: fetch JSON
+      if (!items) {
+        try {
+          const r = await fetch("shap_importance_pt501.json", { cache: "no-store" });
+          if (r.ok) {
+            const data = await r.json();
+            if (data?.feature_importance && Array.isArray(data.feature_importance)) {
+              items = data.feature_importance;
             }
-            return arr;
           }
-          const wins = findWindows(maskAny);
-          return wins.map(([s,e])=>{
-            const x0=tCVA[s], x1=tCVA[e];
-            let durationLabel="—";
-            const d0=new Date(x0), d1=new Date(x1);
-            if (!isNaN(d0) && !isNaN(d1)) durationLabel=((d1-d0)).toFixed(1)+" s";
-            else if (isFinite(Number(x0)) && isFinite(Number(x1))) durationLabel=String(Number(x1)-Number(x0));
-            return {
-              startIdx:s, endIdx:e, start:String(x0), end:String(x1),
-              durationLabel, maxT2:Math.max(...T2.slice(s,e+1)), maxQ:Math.max(...Q.slice(s,e+1))
-            };
-          });
-        })();
-
-        window.ReportData.cva = { t: tCVA, T2, Q, T2_UCL, Q_UCL, faultRanges };
-        // default k*: first breach else argmax normalized
-        const T2N = T2_UCL ? T2.map(v=>v/T2_UCL) : T2;
-        const QN  = Q_UCL  ? Q.map(v=>v/Q_UCL)   : Q;
-        let kStar = -1;
-        for (let i=0;i<T2.length;i++){ if (T2N[i]>1 || QN[i]>1){ kStar=i; break; } }
-        if (kStar<0) {
-          let best=-Infinity, arg=0;
-          for (let i=0;i/T2.length;i++){ /* no-op just placeholder */ }
-          for (let i=0;i<T2.length;i++){ const s=Math.max(T2N[i],QN[i]); if (s>=best){best=s; arg=i;} }
-          kStar=arg;
+        } catch (e) {
+          console.warn("SHAP fetch failed:", e);
         }
-        window.ReportData.contribAt = kStar;
-        document.getElementById("kSelect").value = kStar;
-      })();
-
-      // === Contribution plot (supports % toggle)
-      function renderContrib(kStar) {
-        const container = document.getElementById("plot-contrib");
-        const contrib = res.cva?.contrib;
-        if (!contrib) {
-          container.innerHTML = "<div class='text-yellow-400'>Contribution arrays not available.</div>";
-          return;
-        }
-        const names = contrib.features || [];
-        const Ctot  = contrib.C_total || []; // retained-space (can be signed)
-        const Cq    = contrib.C_q     || []; // residual Q (>=0)
-        if (!names.length || !Ctot.length) {
-          container.innerHTML = "<div class='text-yellow-400'>No contribution data.</div>";
-          return;
-        }
-        const m = names.length;
-        const N = (Ctot[0] || []).length;
-        if (kStar == null || isNaN(kStar) || kStar < 0) kStar = 0;
-        if (kStar >= N) kStar = N - 1;
-
-        // Magnitudes per variable at time k
-        const takeAbs = (M, k) => Array.from({length:m}, (_,j)=> Math.abs((M[j]||[])[k] || 0));
-        const vTotAbs = takeAbs(Ctot, kStar);  // retained |C|
-        const vQAbs   = takeAbs(Cq,   kStar);  // residual Q already nonneg
-
-        const asPercent = !!document.getElementById("asPercent")?.checked;
-
-        // Convert to percent safely (avoid divide-by-zero)
-        function toPercent(vec) {
-          const s = vec.reduce((a,b)=>a+b, 0);
-          if (!isFinite(s) || s <= 0) return vec.map(() => 0);
-          return vec.map(v => 100 * v / s);
-        }
-
-        const valsTotRaw = vTotAbs;
-        const valsQRaw   = vQAbs;
-        const valsTot    = asPercent ? toPercent(valsTotRaw) : valsTotRaw;
-        const valsQ      = asPercent ? toPercent(valsQRaw)   : valsQRaw;
-
-        // Rank by retained (or by percent if toggled)
-        const score = asPercent ? valsTot : valsTotRaw;
-        const order = score.map((v,i)=>[v,i]).sort((a,b)=> b[0]-a[0]).slice(0, Math.min(10,m)).map(x=>x[1]);
-
-        const labels  = order.map(i=> names[i]);
-        const xTot    = order.map(i=> valsTot[i]);
-        const xQ      = order.map(i=> valsQ[i]);
-
-        const hoverVal = asPercent ? "%{x:.2f}%" : "%{x:.4g}";
-        const traces = [
-          { type:"bar", x: xTot, y: labels, name: "C (retained)", orientation: "h",
-            hovertemplate: "<b>%{y}</b><br>C (retained): "+hoverVal+"<extra></extra>" },
-          { type:"bar", x: xQ,   y: labels, name: "Residual (Q)", orientation: "h",
-            hovertemplate: "<b>%{y}</b><br>Residual Q: "+hoverVal+"<extra></extra>" }
-        ];
-        const layout = {
-          margin: { t: 40, r: 20, b: 40, l: 160 },
-          barmode: "group",
-          title: `Contribution (Top ${labels.length}) @ t=${kStar}` + (asPercent ? " — % of total" : ""),
-          xaxis: { title: asPercent ? "Share of total (%)" : "Magnitude (absolute)", range: asPercent ? [0, 100] : undefined }
-        };
-        Plotly.newPlot("plot-contrib", traces, layout, {responsive:true, displaylogo:false});
-
-        window.ReportData.contribAt = kStar;
       }
 
-      // Initial contribution render
-      renderContrib((window.ReportData && window.ReportData.contribAt) ?? 0);
-
-      // Manual selection + % toggle
-      document.getElementById("btnApplyK").addEventListener("click", () => {
-        const v = parseInt(document.getElementById("kSelect").value, 10);
-        const k = isNaN(v) ? (window.ReportData?.contribAt ?? 0) : v;
-        renderContrib(k);
-      });
-      document.getElementById("asPercent").addEventListener("change", () => {
-        const k = window.ReportData?.contribAt ?? 0;
-        renderContrib(k);
-      });
-
-      // === SHAP (optional)
-      (async function renderSHAP() {
-        const shapDiv = document.getElementById("plot-shap");
-        function drawSHAP(items) {
-          const x = items.map(d => d.feature);
-          const y = items.map(d => d.score);
-          return Plotly.newPlot("plot-shap", [{ type: "bar", x, y, name: "Impact (mean |SHAP|)" }], {
-            title: "Which sensors influence PT501 predictions?",
-            margin: { t: 40, r: 20, b: 80, l: 60 },
-            xaxis: { tickangle: -30 },
-            yaxis: { title: "Mean |SHAP| (aggregated over time)" },
-            paper_bgcolor: "#1f2937", plot_bgcolor: "#1f2937",
-            font: { color: "#fff" }
-          }, { responsive: true, displaylogo: false });
-        }
-        let items = null;
-        if (res?.shap?.feature_importance && Array.isArray(res.shap.feature_importance)) {
-          items = res.shap.feature_importance;
-        }
-        if (!items) {
-          try {
-            const r = await fetch("shap_importance_pt501.json", { cache: "no-store" });
-            if (r.ok) {
-              const data = await r.json();
-              if (data?.feature_importance && Array.isArray(data.feature_importance)) {
-                items = data.feature_importance;
-              }
-            }
-          } catch {}
-        }
-        if (items && items.length) {
-          await drawSHAP(items.slice(0, 15));
-        } else {
-          shapDiv.style.display = "none";
-          meta.insertAdjacentHTML("beforeend", `<div class="mt-1 text-gray-400">SHAP importance not available for PT501.</div>`);
-        }
-      })();
-
-      // === PDF Generation
-      async function plotToPNG(divId, scale = 2) {
-        const el = document.getElementById(divId);
-        await Plotly.Plots.resize(el);
-        return await Plotly.toImage(el, { format: "png", scale });
+      // Render or hide
+      if (items && items.length) {
+        await drawSHAP(items.slice(0, 15));
+      } else {
+        shapDiv.style.display = "none";
+        meta.insertAdjacentHTML(
+          "beforeend",
+          `<div class="mt-1 text-gray-400">SHAP importance not available for PT501.</div>`
+        );
       }
-      document.getElementById("btnReport").addEventListener("click", async () => {
-        const { jsPDF } = window.jspdf;
-        const doc = new jsPDF({ unit: "mm", format: "a4" });
+    })();
 
-        // Header
-        const title = "Predictive Maintenance Report — PT501";
-        doc.setFont("helvetica", "bold"); doc.setFontSize(16);
-        doc.text(title, 14, 16);
-        doc.setFont("helvetica", "normal"); doc.setFontSize(10);
-        doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 22);
+    // === PDF Generation ===
+    function fmtNum(x) {
+      if (x == null || !isFinite(x)) return "—";
+      // Use scientific notation when wide
+      if (Math.abs(x) >= 1e6 || (Math.abs(x) > 0 && Math.abs(x) < 1e-2)) {
+        return x.toExponential(2);
+      }
+      // Otherwise 2 decimals max
+      return Number(x).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }
 
-        const rd = window.ReportData || {};
-        const cva = rd.cva || {};
-        const t2Breach = Array.isArray(cva.T2) && isFinite(cva.T2_UCL) ? cva.T2.some(v => v > cva.T2_UCL) : false;
-        const qBreach  = Array.isArray(cva.Q) && isFinite(cva.Q_UCL)  ? cva.Q.some(v => v > cva.Q_UCL)  : false;
+    function rightText(doc, text, xRight, y) {
+      const w = doc.getTextWidth(text);
+      doc.text(text, xRight - w, y);
+    }
 
-        // Summary
-        let y = 30;
-        doc.setFontSize(12); doc.setFont("helvetica","bold");
-        doc.text("1) Summary", 14, y);
-        y += 6; doc.setFontSize(10); doc.setFont("helvetica","normal");
-        doc.text(`T² exceeded UCL: ${t2Breach ? "Yes" : "No"} (UCL=${(cva.T2_UCL ?? "n/a")})`, 14, y); y += 5;
-        doc.text(`Q exceeded UCL: ${qBreach ? "Yes" : "No"} (UCL=${(cva.Q_UCL ?? "n/a")})`, 14, y); y += 8;
+    async function plotToPNG(divId, scale = 2) {
+      const el = document.getElementById(divId);
+      await Plotly.Plots.resize(el);
+      return await Plotly.toImage(el, { format: "png", scale });
+    }
 
-        // Recommendation
-        doc.setFontSize(12); doc.setFont("helvetica","bold");
-        doc.text("2) Maintenance Recommendation", 14, y);
-        y += 6; doc.setFontSize(10); doc.setFont("helvetica","normal");
-        let rec = "System operating within control limits. No immediate action required.";
-        if (t2Breach && qBreach) rec = "Immediate inspection recommended — process anomaly detected (T² & Q exceeded).";
-        else if (t2Breach || qBreach) rec = "Potential drift detected — schedule maintenance check and monitor closely.";
-        const recLines = doc.splitTextToSize(rec, 182);
-        doc.text(recLines, 14, y);
-        y += 10 + recLines.length * 1.8;
+    document.getElementById("btnReport").addEventListener("click", async () => {
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF({ unit: "mm", format: "a4" });
+      const PAGE_W = doc.internal.pageSize.getWidth();
+      const PAGE_H = doc.internal.pageSize.getHeight();
+      const LM = 14, RM = 14;                    // margins
+      const RIGHT = PAGE_W - RM;
 
-        // Fault windows table
-        doc.setFontSize(12); doc.setFont("helvetica","bold");
-        doc.text("3) Abnormal Time Windows (exceeded threshold)", 14, y);
-        y += 6; doc.setFontSize(10); doc.setFont("helvetica","normal");
-        const rows = (cva.faultRanges || []);
-        doc.text("No.", 16, y);
-        doc.text("Start", 36, y);
-        doc.text("End",   96, y);
-        doc.text("Duration", 156, y);
-        doc.text("Max T² / Q", 178, y);
-        y += 4;
-        for (let idx = 0; idx < rows.length; idx++) {
-          const r = rows[idx];
-          if (y > 270) { doc.addPage(); y = 20; }
-          doc.text(String(idx + 1), 16, y);
-          doc.text(String(r.start), 36, y);
-          doc.text(String(r.end),   96, y);
-          doc.text(r.durationLabel || "—", 156, y);
-          doc.text(`${(r.maxT2 ?? 0).toFixed(2)} / ${(r.maxQ ?? 0).toFixed(2)}`, 178, y);
+      // Header
+      const title = "Predictive Maintenance Report — PT501";
+      doc.setFont("helvetica", "bold"); doc.setFontSize(16);
+      doc.text(title, LM, 16);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(10);
+      doc.text(`Generated: ${new Date().toLocaleString()}`, LM, 22);
+
+      const rd = window.ReportData || {};
+      const cva = rd.cva || {};
+      const t2Breach = Array.isArray(cva.T2) && isFinite(cva.T2_UCL) ? cva.T2.some(v => v > cva.T2_UCL) : false;
+      const qBreach  = Array.isArray(cva.Q) && isFinite(cva.Q_UCL)  ? cva.Q.some(v => v > cva.Q_UCL)  : false;
+
+      let y = 30;
+
+      // 1) Summary
+      doc.setFont("helvetica","bold"); doc.setFontSize(12);
+      doc.text("1) Summary", LM, y); y += 5.5;
+      doc.setFont("helvetica","normal"); doc.setFontSize(10);
+      doc.text(`T² exceeded UCL: ${t2Breach ? "Yes" : "No"} (UCL=${fmtNum(cva.T2_UCL)})`, LM, y); y += 4.5;
+      doc.text(`Q exceeded UCL: ${qBreach ? "Yes" : "No"} (UCL=${fmtNum(cva.Q_UCL)})`, LM, y); y += 7;
+
+      // 2) Maintenance Recommendation
+      doc.setFont("helvetica","bold"); 
+      doc.setFontSize(12);
+      doc.text("2) Maintenance Recommendation", LM, y); 
+      y += 5.5;
+
+      doc.setFont("helvetica","normal"); 
+      doc.setFontSize(10);
+
+      // --- Main recommendation text ---
+      let rec = "System operating within control limits. No immediate action required.";
+      if (t2Breach && qBreach)
+        rec = "Immediate inspection recommended — process anomaly detected (T² & Q exceeded).";
+      else if (t2Breach || qBreach)
+        rec = "Potential drift detected — schedule maintenance check and monitor closely.";
+
+      const recLines = doc.splitTextToSize(rec, PAGE_W - LM - RM);
+      doc.text(recLines, LM, y);
+      y += recLines.length * 4.2 + 1.5;
+
+      // --- Top-3 Influencing Variables Section ---
+      const top3 = (window.ReportData.top3 && window.ReportData.top3.items) ? window.ReportData.top3.items : [];
+      const kStarForText = (window.ReportData.top3 && Number.isFinite(window.ReportData.top3.k)) ? window.ReportData.top3.k : null;
+
+      if (top3.length) {
+        // Section header
+        doc.setFont("helvetica","bold");
+        doc.text("Key Influencing Variables (Top 3)", LM, y);
+        y += 5;
+
+        doc.setFont("helvetica","normal");
+        doc.setFontSize(10);
+        const header = kStarForText != null
+          ? `At time index t=${kStarForText}, the variables with the highest contributions to the anomaly are:`
+          : `The variables with the highest contributions to the anomaly are:`;
+        const headerLines = doc.splitTextToSize(header, PAGE_W - LM - RM);
+        doc.text(headerLines, LM, y);
+        y += headerLines.length * 4.2 + 1.8;
+
+        // Detailed rows (1–3)
+        top3.forEach((item, idx) => {
+          if (y > PAGE_H - 20) { doc.addPage(); y = 16; }
+
+          // Title
+          doc.setFont("helvetica","bold");
+          doc.text(`${idx + 1}) ${item.name}`, LM, y);
+          y += 4.2;
+
+          // Description
+          doc.setFont("helvetica","normal");
+          let desc = item.note || "";
+          // If description already starts with the variable name, don’t duplicate it
+          if (desc.trim().startsWith(item.name)) desc = desc.replace(item.name, "").trim().replace(/^[:\s-]+/, "");
+          const descLines = doc.splitTextToSize(`${item.name}: ${desc}`, PAGE_W - LM - RM);
+          doc.text(descLines, LM + 4, y);
+          y += descLines.length * 4.2;
+
+          // Metrics
+          const metrics = `Retained |C| = ${fmtNum(item.retained_abs)}, Residual Q = ${fmtNum(item.residual_abs)}`;
+          doc.text(metrics, LM + 4, y);
           y += 6;
-        }
+        });
 
-        // Charts page
-        doc.addPage();
-        doc.setFontSize(12); doc.setFont("helvetica","bold");
-        doc.text("4) Diagnostic Charts", 14, 16);
+        // --- Summary paragraph AFTER the list ---
+        const varNames = top3.map(x => x.name).join(", ");
+        const summary =
+          `Based on the contribution analysis, the top three variables influencing the anomaly are ${varNames}. ` +
+          `These process variables contributed most to fault detection, indicating that sensors or components related ` +
+          `to these variables may require inspection, recalibration, or repair to restore normal operation.`;
+        const summaryLines = doc.splitTextToSize(summary, PAGE_W - LM - RM);
+        y += 2;
+        doc.text(summaryLines, LM, y);
+        y += summaryLines.length * 4.2 + 2;
+      }
+
+
+      // 3) Abnormal Time Windows
+      doc.setFont("helvetica","bold"); doc.setFontSize(12);
+      doc.text("3) Abnormal Time Windows (exceeded threshold)", LM, y); y += 6;
+      doc.setFont("helvetica","normal"); doc.setFontSize(10);
+
+      // table column layout (fixed to keep inside margins)
+      const col = {
+        no:    LM + 2,
+        start: LM + 24,
+        end:   LM + 74,
+        dur:   LM + 124,
+        max:   RIGHT
+      };
+
+      // headers
+      doc.text("No.",    col.no,    y);
+      doc.text("Start",  col.start, y);
+      doc.text("End",    col.end,   y);
+      doc.text("Duration", col.dur, y);
+      rightText(doc, "Max T² / Q", col.max, y);
+      y += 4;
+
+      const rows = Array.isArray(cva.faultRanges) ? cva.faultRanges : [];
+      const ROW_H = 5;
+
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+
+        // page break if near bottom
+        if (y > PAGE_H - 20) { doc.addPage(); y = 20; }
+
+        doc.text(String(i + 1), col.no, y);
+        // keep start/end as strings (timestamps or indices)
+        doc.text(String(r.start ?? "—"), col.start, y);
+        doc.text(String(r.end   ?? "—"), col.end,   y);
+
+        const dur = r.durationLabel || "—";
+        doc.text(dur, col.dur, y);
+
+        const maxPair = `${fmtNum(r.maxT2)} / ${fmtNum(r.maxQ)}`;
+        rightText(doc, maxPair, col.max, y);
+
+        y += ROW_H;
+      }
+
+      // ---- Decide if we need a new page for charts ----
+      if (y > PAGE_H - 40) { doc.addPage(); y = 16; } else { y += 3; }
+
+        doc.setFont("helvetica","bold"); doc.setFontSize(12);
+        doc.text("4) Diagnostic Charts", LM, y);
+        y += 4;
         doc.setFont("helvetica","normal"); doc.setFontSize(10);
 
+        // Render plots to PNGs
         const predsPNG   = await plotToPNG("plot-preds", 2);
         const cvaPNG     = await plotToPNG("plot-cva", 2);
         const contribPNG = await plotToPNG("plot-contrib", 2);
@@ -459,29 +654,34 @@
         const shapEl = document.getElementById("plot-shap");
         if (shapEl && shapEl.data) shapPNG = await plotToPNG("plot-shap", 2);
 
-        let imgY = 22;
-        const imgW = 180, imgH = 80;
-        doc.addImage(predsPNG,   "PNG", 14, imgY, imgW, imgH); imgY += imgH + 6;
-        doc.addImage(cvaPNG,     "PNG", 14, imgY, imgW, imgH); imgY += imgH + 6;
-        if (imgY > 250) { doc.addPage(); imgY = 20; }
-        doc.addImage(contribPNG, "PNG", 14, imgY, imgW, imgH); imgY += imgH + 6;
-        if (shapPNG) {
-          if (imgY > 250) { doc.addPage(); imgY = 20; }
-          doc.addImage(shapPNG, "PNG", 14, imgY, imgW, imgH);
+        const IMG_W = PAGE_W - LM - RM; // full width within margins
+        const IMG_H = 68;               // a bit shorter to avoid cramping
+        const GAP   = 8;                // larger gap so charts don't look stuck
+
+        // Helper to place one image and flow to next page as needed
+        function placeImage(png) {
+          if (!png) return;
+          if (y + IMG_H > PAGE_H - 16) { // not enough space -> new page
+            doc.addPage();
+            y = 16;
+          }
+          doc.addImage(png, "PNG", LM, y, IMG_W, IMG_H);
+          y += IMG_H + GAP;
         }
 
-        doc.save("Maintenance_Report_PT501.pdf");
-      });
+        placeImage(predsPNG);
+        placeImage(cvaPNG);
+        placeImage(contribPNG);
+        placeImage(shapPNG);
 
-      // === Responsive resize
-      window.addEventListener("resize", () => {
-        Plotly.Plots.resize("plot-preds");
-        Plotly.Plots.resize("plot-cva");
-        Plotly.Plots.resize("plot-contrib");
-        const shap = document.getElementById("plot-shap");
-        if (shap && shap.data) Plotly.Plots.resize("plot-shap");
-      });
-    })();
+      doc.save("Maintenance_Report_PT501.pdf");
+    });
+
+    document.getElementById("logoutBtn").addEventListener("click", () => {
+      localStorage.removeItem("loggedInUser");
+      window.location.href = "index.html";
+    });
+    </script>
   </script>
 </body>
 </html>
