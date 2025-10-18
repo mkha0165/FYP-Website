@@ -4,6 +4,7 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 from scipy.io import loadmat
 from sklearn.preprocessing import StandardScaler
+from sklearn.neighbors import KernelDensity
 
 # ---------- Model ----------
 class LSTMModel(nn.Module):
@@ -61,23 +62,32 @@ def fit_cva(Yp, Yf, energy_keep=0.9):
     Spp = (Yp @ Yp.T) / (M - 1)
     Sff = (Yf @ Yf.T) / (M - 1)
     Sfp = (Yf @ Yp.T) / (M - 1)
-
     Spp_m12 = sym_inv_sqrt(Spp)
     Sff_m12 = sym_inv_sqrt(Sff)
-
     H = Sff_m12 @ Sfp @ Spp_m12
-    U, D, Vt = np.linalg.svd(H, full_matrices=False)   # D = singular values (γ_i)
-    cum = np.cumsum(D**2) / np.sum(D**2)
-    r = max(1, int(np.searchsorted(cum, energy_keep) + 1))
-    print("CVA retained r =", r)
+    U, D, Vt = np.linalg.svd(H, full_matrices=False)
+    r = max(1, int(np.searchsorted(np.cumsum(D**2)/np.sum(D**2), energy_keep) + 1))
+    print("CVA r =", r)
+    # r=25
+    Vr = Vt[:r, :].T
+    J = Vr.T @ Spp_m12
+    L = (np.eye(Spp_m12.shape[0]) - Vr @ Vr.T) @ Spp_m12
+    return J, L
 
-    Vr = Vt[:r, :].T        # (m*p x r)
-    Dr = D[:r].copy()       # (r,) retained singular values
-
-    J = Vr.T @ Spp_m12                              # (r x m*p)
-    L = (np.eye(Spp_m12.shape[0]) - Vr @ Vr.T) @ Spp_m12   # (m*p x m*p)
-
-    return J, L, Dr
+# def ucl_kde(values, alpha=0.99):
+#     x = np.asarray(values).ravel()
+#     if x.size == 0:
+#         return 0.0
+#     std = np.std(x)
+#     if std == 0:
+#         return float(np.max(x))
+#     bw = 1.06 * std * (len(x) ** (-1/5))
+#     kde = KernelDensity(kernel="gaussian", bandwidth=bw).fit(x.reshape(-1, 1))
+#     grid = np.linspace(0, max(1e-6, x.max() * 1.5), 5000).reshape(-1, 1)
+#     pdf = np.exp(kde.score_samples(grid))
+#     cdf = np.cumsum(pdf); cdf /= cdf[-1]
+#     idx = np.searchsorted(cdf, alpha)
+#     return float(grid[min(idx, len(grid)-1)])
 
 def ucl_kde(values, alpha=0.99):
     return float(np.quantile(values, alpha))
@@ -140,7 +150,7 @@ per_target = {'PT501': {"resid_ucl": residual_ucl(resid[:, 0], alpha=0.99)}}
 
 # ---------- CVA fit & UCLs (inputs only) ----------
 Yp_tr, Yf_tr = build_pf_blocks(Xtr, p_lags, f_lags)
-J, L, Dr = fit_cva(Yp_tr, Yf_tr, energy_keep=0.9)
+J, L = fit_cva(Yp_tr, Yf_tr)
 T2_tr = np.sum((J @ Yp_tr)**2, axis=0)
 Q_tr  = np.sum((L @ Yp_tr)**2, axis=0)
 T2_UCL, Q_UCL = ucl_kde(T2_tr, 0.995), ucl_kde(Q_tr, 0.995)
@@ -151,7 +161,6 @@ joblib.dump(scalery, "scalery.pkl")
 torch.save(model.state_dict(), "model.pt")
 np.save("cva_J.npy", J)
 np.save("cva_L.npy", L)
-np.save("cva_D.npy", Dr)  # <-- NEW: retained singulars γ_i for contribution scaling
 
 with open("thresholds.json", "w") as f:
     json.dump({"per_target": per_target, "T2_UCL": T2_UCL, "Q_UCL": Q_UCL}, f, indent=2)
@@ -168,4 +177,4 @@ with open("config.json", "w") as f:
         "f_lags": f_lags
     }, f, indent=2)
 
-print("✅ Saved: model.pt, scalerX.pkl, scalery.pkl, cva_J.npy, cva_L.npy, cva_D.npy, thresholds.json, config.json")
+print("✅ Saved: model.pt, scalerX.pkl, scalery.pkl, cva_J.npy, cva_L.npy, thresholds.json, config.json")
