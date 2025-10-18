@@ -1,6 +1,11 @@
 {
   "targets": [
-    "PT501"
+    "PT501",
+    "FT305",
+    "FT407",
+    "FT104",
+    "LI504",
+    "VC501"
   ],
   "features": [
     "PT312",
@@ -9,9 +14,6 @@
     "PT403",
     "PT408_diff",
     "PT403_diff",
-    "FT305",
-    "FT104",
-    "FT407",
     "LI405",
     "FT406",
     "FT407_density",
@@ -20,8 +22,6 @@
     "FT407_temp",
     "FT406_temp",
     "FT104_temp",
-    "LI504",
-    "VC501",
     "VC302",
     "VC101",
     "PO1",
@@ -55,7 +55,6 @@
   ],
   "window": 42,
   "horizon": 1,
-  "hidden_size": 64,
   "p_lags": 15,
   "f_lags": 15
 }
