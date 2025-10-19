@@ -59,7 +59,8 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, :x.size(1), :]
 
 class TransformerRegressor(nn.Module):
-    def __init__(self, n_features, d_model=64, nhead=4, num_layers=2, dim_feedforward=128, dropout=0.2):
+    def __init__(self, n_features, d_model=64, nhead=4, num_layers=2,
+                 dim_feedforward=128, dropout=0.2, output_dim=1):
         super().__init__()
         self.input_fc = nn.Linear(n_features, d_model)
         self.pos_encoder = PositionalEncoding(d_model)
@@ -72,7 +73,7 @@ class TransformerRegressor(nn.Module):
         self.fc_out = nn.Sequential(
             nn.Linear(d_model, d_model // 2),
             nn.ReLU(),
-            nn.Linear(d_model // 2, len(TARGETS))
+            nn.Linear(d_model // 2, output_dim)
         )
 
     def forward(self, x):
@@ -82,10 +83,26 @@ class TransformerRegressor(nn.Module):
         last = out[:, -1, :]
         return self.fc_out(last)
 
+
 # ---------- Load trained model ----------
-MODEL = TransformerRegressor(n_features=len(FEATURES))
-MODEL.load_state_dict(torch.load("model.pt", map_location="cpu"))
-MODEL.eval()
+# MODEL = TransformerRegressor(n_features=len(FEATURES))
+# MODEL.load_state_dict(torch.load("model.pt", map_location="cpu"))
+# MODEL.eval()
+
+# ---------- Multi-model setup ----------
+MODEL_DIR = "./models"  # folder where you store model files (e.g. model_PT501.pt)
+
+# Load all available models at startup
+MODELS = {}
+for target in CFG["targets"]:
+    model_path = os.path.join(MODEL_DIR, f"model_{target}.pt")
+    if os.path.exists(model_path):
+        m = TransformerRegressor(n_features=len(FEATURES))
+        m.load_state_dict(torch.load(model_path, map_location="cpu"))
+        m.eval()
+        MODELS[target] = m
+    else:
+        print(f"⚠️ Warning: model for {target} not found at {model_path}")
 
 
 # ---------- Helpers ----------
@@ -207,10 +224,21 @@ def result_latest():
     return JSONResponse(LAST_RESULT)
 
 @app.post("/predict", response_model=PredictResponse)
-async def predict(file: UploadFile = File(...)):
+async def predict(file: UploadFile = File(...), target: str = "PT501"):
     global LAST_RESULT
 
-    # 1) Read CSV
+    # Ensure model exists
+    if target not in MODELS:
+        raise HTTPException(status_code=400, detail=f"No trained model found for target '{target}'.")
+
+    model = MODELS[target]  # <-- Use the preloaded model directly
+    model.eval()
+
+    # Load corresponding scalers
+    scalerX = joblib.load("scalerX.pkl")
+    scalery = joblib.load(f"scalers/scalery_{target}.pkl")
+
+    # 1) Read CSV strictly and parse columns
     try:
         content = await file.read()
         df = read_ordered_csv_assign_names(content, ALL_COLS, TARGETS, FEATURES)
@@ -222,15 +250,24 @@ async def predict(file: UploadFile = File(...)):
     # 2) Inputs
     X = SCALER_X.transform(df[FEATURES].values)
 
-    # 3) LSTM sequences & predict
+    # 3) Create input sequences
     X_seq = make_sequences_X(X, WINDOW, HORIZON)
     if X_seq.size == 0:
         raise HTTPException(status_code=400, detail=f"Not enough rows for window={WINDOW}, horizon={HORIZON}.")
+
+    # 4) Predict
     with torch.no_grad():
-        y_pred_std = MODEL(torch.tensor(X_seq, dtype=torch.float32)).cpu().numpy()
+        X_tensor = torch.tensor(X_seq, dtype=torch.float32)
+        y_pred_std = model(X_tensor).cpu().numpy()
+
+    # Ensure shape is consistent
+    if y_pred_std.ndim == 1:
+        y_pred_std = y_pred_std.reshape(-1, 1)
+
+    # Inverse transform prediction to original scale
     y_pred = SCALER_Y.inverse_transform(y_pred_std)
 
-    # 4) Ground truth (optional)
+    # 5) If truth values are present, compute residuals and metrics
     y_true_seq = None
     resid = None
     metrics = None
@@ -242,20 +279,26 @@ async def predict(file: UploadFile = File(...)):
             for i in range(T - WINDOW - HORIZON + 1):
                 seq_truth.append(y_full[i + WINDOW + HORIZON - 1])
             y_true_seq = np.array(seq_truth)
+
+            # Drop NaN rows
             if np.isnan(y_true_seq).any():
                 mask = ~np.isnan(y_true_seq).any(axis=1)
                 y_true_seq = y_true_seq[mask]
                 y_pred = y_pred[mask]
-            resid = np.abs(y_true_seq - y_pred)
-            metrics = {}
-            for j, name in enumerate(TARGETS):
-                yj = y_true_seq[:, j]; yhat = y_pred[:, j]
-                rmse = float(np.sqrt(np.mean((yj - yhat) ** 2)))
-                mae  = float(np.mean(np.abs(yj - yhat)))
-                ss_res = float(np.sum((yj - yhat) ** 2))
-                ss_tot = float(np.sum((yj - np.mean(yj)) ** 2))
-                r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
-                metrics[name] = {"rmse": rmse, "mae": mae, "r2": r2}
+
+            # Compute metrics only for the selected target
+            resid = np.abs(y_true_seq[:, TARGETS.index(target)] - y_pred[:, 0])
+            yj = y_true_seq[:, TARGETS.index(target)]
+            yhat = y_pred[:, 0]
+
+            rmse = float(np.sqrt(np.mean((yj - yhat) ** 2)))
+            mae  = float(np.mean(np.abs(yj - yhat)))
+            ss_res = float(np.sum((yj - yhat) ** 2))
+            ss_tot = float(np.sum((yj - np.mean(yj)) ** 2))
+            r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+
+            metrics = {target: {"rmse": rmse, "mae": mae, "r2": r2}}
+
 
     # 5) CVA (T2/Q) + Contributions
     Yp_te, _ = build_pf_blocks(X, P_LAGS, F_LAGS)
@@ -311,17 +354,51 @@ async def predict(file: UploadFile = File(...)):
             "contrib": { "features": FEATURES, "C_total": [], "C_q": [] }
         }
 
-    # 6) Build response
+    # 7) Build response
     t = list(range(len(y_pred)))
     result = {
-        "targets": TARGETS,
+        "targets": [target],
         "time_index": t,
         "y_pred": y_pred.tolist(),
         "y_true": None if y_true_seq is None else y_true_seq.tolist(),
         "resid_abs": None if resid is None else resid.tolist(),
         "resid_ucl": RESID_UCLS,
         "metrics": metrics,
-        "cva": cva
+        "cva": cva,
     }
+
     LAST_RESULT = result
     return JSONResponse(result)
+
+
+def build_pdf_from_result(result: dict, shap_importance=None, target="TARGET"):
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    c.setFont("Helvetica", 12)
+    c.drawString(100, 800, f"Soft Sensor Report for Target: {target}")
+    c.drawString(100, 780, "Summary metrics:")
+
+    metrics = result.get("metrics", {})
+    y = 760
+    for name, m in metrics.items():
+        c.drawString(120, y, f"{name}: RMSE={m['rmse']:.4f}, MAE={m['mae']:.4f}, R²={m['r2']:.4f}")
+        y -= 20
+
+    c.showPage()
+    c.save()
+    buffer.seek(0)
+    return buffer.read()
+
+# ---------- Optional: on-demand PDF report ----------
+@app.post("/report/pdf")
+def make_report(shap: dict | None = Body(default=None)):
+    global LAST_RESULT
+    if LAST_RESULT is None:
+        return Response(content="No prediction result available. Run /predict first.", status_code=400)
+    pdf_bytes = build_pdf_from_result(LAST_RESULT, shap_importance=shap, target=TARGETS[0] if TARGETS else "TARGET")
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                    headers={"Content-Disposition": 'attachment; filename="softsensor_report.pdf"'})
