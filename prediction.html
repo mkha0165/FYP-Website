@@ -567,22 +567,36 @@
         const PAGE_H = doc.internal.pageSize.getHeight();
         const LM = 14, RM = 14;
         const RIGHT = PAGE_W - RM;
+        // --- Header
+        const title = `Predictive Maintenance Report — ${targetName} (${
+          explainVar(targetName) || "Unknown Variable"
+        })`;
 
-      // --- Header
-      const title = "Predictive Maintenance Report — ${targetName}";
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(16);
-      doc.text(title, 14, 16);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(10);
-      doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 22);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(16);
+
+        // Wrap text automatically within a page width (maxWidth = 180mm for A4 with margins)
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const margin = 14;
+        const maxWidth = pageWidth - margin * 2;
+
+        // Split long text into multiple lines
+        const titleLines = doc.splitTextToSize(title, maxWidth);
+
+        // Add title text
+        doc.text(titleLines, margin, 16);
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        doc.text(`Generated: ${new Date().toLocaleString()}`, margin, 22 + (titleLines.length - 1) * 6);
+
 
         const rd = window.ReportData || {};
         const cva = rd.cva || {};
         const t2Breach = Array.isArray(cva.T2) && isFinite(cva.T2_UCL) ? cva.T2.some(v => v > cva.T2_UCL) : false;
         const qBreach  = Array.isArray(cva.Q) && isFinite(cva.Q_UCL)  ? cva.Q.some(v => v > cva.Q_UCL)  : false;
 
-        let y = 30;
+        let y = 30 + (titleLines.length - 1) * 6; // push everything down based on title height
 
         // 1) Summary
         doc.setFont("helvetica","bold"); doc.setFontSize(12);
@@ -695,7 +709,7 @@
         if (shapEl && shapEl.data) shapPNG = await plotToPNG("plot-shap", 2);
 
         const IMG_W = PAGE_W - LM - RM;
-        const IMG_H = 68;
+        const IMG_H = IMG_W * 0.55; // maintain roughly 16:9 ratio (adjust 0.55 as needed)
         const GAP   = 8;
 
         function placeImage(png) {
