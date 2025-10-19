@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <title>Upload CSV</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     /* Sidebar independent scroll */
@@ -12,10 +13,7 @@
       scrollbar-width: thin;
       scrollbar-color: rgba(255,255,255,0.4) transparent;
     }
-
-    #historySidebar::-webkit-scrollbar {
-      width: 8px;
-    }
+    #historySidebar::-webkit-scrollbar { width: 8px; }
     #historySidebar::-webkit-scrollbar-thumb {
       background-color: rgba(255,255,255,0.4);
       border-radius: 4px;
@@ -28,7 +26,6 @@
 <body class="h-screen w-screen bg-gradient-to-br from-gray-800 to-black flex justify-center items-center">
 
   <div class="flex w-full max-w-6xl bg-white/10 backdrop-blur-md rounded-3xl overflow-hidden">
-    
     <!-- LEFT: Upload section -->
     <div class="flex-1 p-10 text-center">
       <div class="flex justify-between items-center mb-4">
@@ -71,7 +68,7 @@
   </div>
 
   <script>
-    // ===== Login protection =====
+    /* ===== Login protection ===== */
     const loggedInUser = localStorage.getItem("loggedInUser");
     if (!loggedInUser) {
       alert("You must log in first!");
@@ -80,19 +77,58 @@
       document.getElementById("loggedInUser").textContent = loggedInUser;
     }
 
-    // ===== Logout =====
+    /* ===== IndexedDB helpers for big results ===== */
+    const IDB_DB_NAME = 'predictions-db';
+    const IDB_STORE   = 'results';
+
+    function idbOpen() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(IDB_DB_NAME, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(IDB_STORE)) {
+            db.createObjectStore(IDB_STORE, { keyPath: 'id' });
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async function idbPutResult(result) {
+      const db = await idbOpen();
+      const id = `${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put({ id, result });
+        tx.oncomplete = () => resolve(id);
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+
+    async function idbDeleteResult(id) {
+      const db = await idbOpen();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).delete(id);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+
+    /* ===== Logout ===== */
     document.getElementById("logoutBtn").addEventListener("click", () => {
       localStorage.removeItem("loggedInUser");
       window.location.href = "index.html";
     });
 
-    // ===== Elements =====
+    /* ===== Elements ===== */
     const fileInput = document.getElementById("fileInput");
     const dropZone = document.getElementById("dropZone");
     const browseBtn = document.getElementById("browseBtn");
     const uploadStatus = document.getElementById("uploadStatus");
 
-    // ===== API config =====
+    /* ===== API config ===== */
     const API_URL = "http://127.0.0.1:8000/predict"; // change for deployment
 
     async function postFileToAPI(file) {
@@ -123,16 +159,24 @@
       }
       try {
         const result = await postFileToAPI(file);
+
+        // Put big payload into IndexedDB; store pointer in sessionStorage
+        const pointer = await idbPutResult(result);
+        sessionStorage.setItem("predictionPointer", pointer);
+        sessionStorage.removeItem("predictionResult"); // ensure old key is gone
+
         uploadStatus.innerHTML = `<span class="text-green-400 font-semibold">${file.name} processed successfully. Redirecting…</span>`;
-        sessionStorage.setItem("predictionResult", JSON.stringify(result));
-        saveToHistory(file.name, result);
+
+        // Save compact history entry: only pointer + dataset_id
+        await saveToHistory(file.name, { pointer, dataset_id: result?.dataset_id ?? null });
+
         window.location.href = "prediction.html";
       } catch (err) {
         uploadStatus.innerHTML = `<div class="text-red-400 mt-2 break-words">Error: ${err.message}</div>`;
       }
     }
 
-    // ===== Drag & Drop & Browse =====
+    /* ===== Drag & Drop & Browse ===== */
     dropZone.addEventListener("click", () => fileInput.click());
     dropZone.addEventListener("dragover", (e) => e.preventDefault());
     dropZone.addEventListener("drop", (e) => {
@@ -146,7 +190,7 @@
       handleFile(file);
     });
 
-    // ===== Result History =====
+    /* ===== Result History ===== */
     function loadHistory() {
       const username = localStorage.getItem("loggedInUser");
       const history = JSON.parse(localStorage.getItem(`history_${username}`) || "[]");
@@ -166,6 +210,7 @@
             <div class="flex-1 min-w-0">
               <p class="font-semibold truncate">${item.filename}</p>
               <p class="text-xs text-gray-300">${item.date}</p>
+              ${item.dataset_id ? `<p class="text-[11px] text-gray-400">Dataset: ${item.dataset_id}</p>` : ""}
             </div>
             <div class="flex gap-1 ml-2 shrink-0">
               <button class="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs" data-view="${i}">
@@ -180,35 +225,40 @@
         historyList.appendChild(li);
       });
 
-      // View button
+      // View
       document.querySelectorAll("[data-view]").forEach(btn => {
         btn.addEventListener("click", (e) => {
           const index = e.target.dataset.view;
           const username = localStorage.getItem("loggedInUser");
           const history = JSON.parse(localStorage.getItem(`history_${username}`) || "[]");
           const record = history[index];
-          if (record) {
-            sessionStorage.setItem("predictionResult", JSON.stringify(record.result));
+          if (record && record.pointer) {
+            sessionStorage.setItem("predictionPointer", record.pointer);
+            sessionStorage.removeItem("predictionResult");
             window.location.href = "prediction.html";
           }
         });
       });
 
-      // Remove button
+      // Remove
       document.querySelectorAll("[data-remove]").forEach(btn => {
-        btn.addEventListener("click", (e) => {
+        btn.addEventListener("click", async (e) => {
           const index = parseInt(e.target.dataset.remove);
           const username = localStorage.getItem("loggedInUser");
           const historyKey = `history_${username}`;
           const history = JSON.parse(localStorage.getItem(historyKey) || "[]");
+          const rec = history[index];
+          if (rec?.pointer) {
+            try { await idbDeleteResult(rec.pointer); } catch {}
+          }
           history.splice(index, 1);
           localStorage.setItem(historyKey, JSON.stringify(history));
-          loadHistory(); // re-render
+          loadHistory();
         });
       });
     }
 
-    function saveToHistory(filename, result) {
+    async function saveToHistory(filename, info) {
       const username = localStorage.getItem("loggedInUser");
       const historyKey = `history_${username}`;
       const history = JSON.parse(localStorage.getItem(historyKey) || "[]");
@@ -216,7 +266,8 @@
       const entry = {
         filename,
         date: new Date().toLocaleString(),
-        result
+        pointer: info.pointer,
+        dataset_id: info.dataset_id || null
       };
 
       history.unshift(entry);
