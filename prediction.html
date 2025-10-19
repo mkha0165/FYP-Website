@@ -142,8 +142,6 @@
         return table[name] || "Process variable (unlisted in reference table)";
       }
 
-    // === Dynamically detect selected target ===
-    const res = JSON.parse(sessionStorage.getItem("predictionResult") || "null");
     if (!res) {
       alert("No prediction data found. Please upload a CSV first.");
       window.location.href = "upload.html";
