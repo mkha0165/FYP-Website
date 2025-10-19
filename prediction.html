@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Prediction Results - PT501</title>
+  <title>  Prediction Results (${targetName})</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <!-- Tailwind CSS -->
@@ -16,8 +16,10 @@
 </head>
 <body class="min-h-screen bg-gray-900 text-white p-6">
   <div class="max-w-6xl mx-auto">
-    <h1 class="text-2xl font-bold mb-4">
-      Prediction Results (PT501 - Pressure in 3 Phase Separator (MPA))
+    <h1 id="prediction-title" class="text-2xl font-bold mb-4">
+      <h2 class="text-center mb-4">
+        Prediction Results
+      </h2>
     </h1>
 
     <div id="meta" class="mb-6 text-sm text-gray-300"></div>
@@ -33,21 +35,43 @@
   </div>
 
   <script>
-    // === Load prediction results saved by upload.html ===
+
+    // === Dynamically detect selected target ===
     const res = JSON.parse(sessionStorage.getItem("predictionResult") || "null");
     if (!res) {
       alert("No prediction data found. Please upload a CSV first.");
       window.location.href = "upload.html";
     }
 
-    // Find PT501 index
-    const targetName = "PT501";
+    // Determine which target is selected
+    const targetName =
+      sessionStorage.getItem("selectedTarget") ||
+      res?.target ||
+      (Array.isArray(res.targets) ? res.targets[0] : "Unknown");
+
+    // Define human-readable descriptions
+    const targetDescriptions = {
+      "PT501": "Pressure in 3 Phase Separator (MPA)",
+      "FT305": "Flow Rate Input Air",
+      "FT104": "Density of Water Input",
+      "FT407": "Temperature at Top Riser",
+      "LI504": "Level Gas-Liquid 3 Phase Separator",
+      "VC501": "Position of Valve"
+    };
+
+    // Update title dynamically
+    const titleElement = document.getElementById("prediction-title");
+    titleElement.textContent = `Prediction Results (${targetName} - ${targetDescriptions[targetName] || "Unknown Variable"})`;
+
+    // Check that the selected target exists in model output
     const j = Array.isArray(res.targets) ? res.targets.indexOf(targetName) : -1;
     if (j === -1) {
       document.getElementById("meta").innerHTML =
-        `<div class="text-red-400">Error: PT501 not found in model targets.</div>`;
-      throw new Error("PT501 not in targets");
+        `<div class="text-red-400">Error: ${targetName} not found in model targets.</div>`;
+      throw new Error(`${targetName} not in targets`);
     }
+
+
 
     const t = res.time_index || [];
     const hasTruth = Array.isArray(res.y_true) && res.y_true.length > 0;
@@ -82,22 +106,24 @@
       yTrue = res.y_true.map(row => Array.isArray(row) ? row[j] : row);
     }
 
+    const n = yTrue ? yTrue.length : 0;  // number of ground-truth points
+
     const tracesPred = [{
-      x: t, y: yPred, mode: "lines", name: "PT501 Predicted", yaxis: "y1"
+      x: t, y: yPred, mode: "lines", name: `${targetName} Predicted`, yaxis: "y1"
     }];
     if (hasTruth) {
-      const n = Math.min(t.length, yPred.length, yTrue.length);
       tracesPred.push({
         x: t.slice(0, n), y: yTrue.slice(0, n),
-        mode: "lines", name: "PT501 Actual", yaxis: "y1"
+        mode: "lines", name: `${targetName} Actual`, yaxis: "y1"
       });
     }
 
     Plotly.newPlot("plot-preds", tracesPred, {
       ...baseLayout,
-      title: hasTruth ? "PT501: Predicted vs Actual" : "Predicted PT501",
+      title: hasTruth ? `${targetName}: Predicted vs Actual` : `Predicted ${targetName}`,
       yaxis: { title: "Value (MPa)" }
     }, baseConfig);
+
 
     // Keep a global to assemble the report later
     window.ReportData = {};
@@ -276,33 +302,43 @@
     // === SHAP feature importance (robust: from res, or JSON, else hide) ===
     (async function renderSHAP() {
       const shapDiv = document.getElementById("plot-shap");
+      const meta = document.getElementById("meta");
 
-      function drawSHAP(items) {
+      function drawSHAP(items, targetName) {
         const x = items.map(d => d.feature);
         const y = items.map(d => d.score);
+
         return Plotly.newPlot("plot-shap", [{
-          type: "bar", x, y, name: "Impact (mean |SHAP|)"
+          type: "bar",
+          x,
+          y,
+          name: "Impact (mean |SHAP|)"
         }], {
-          title: "Which sensors influence PT501 predictions?",
+          title: `Which sensors influence ${targetName} predictions?`,
           margin: { t: 40, r: 20, b: 80, l: 60 },
           xaxis: { tickangle: -30 },
           yaxis: { title: "Mean |SHAP| (aggregated over time)" },
-          paper_bgcolor: "#1f2937", plot_bgcolor: "#1f2937",
+          paper_bgcolor: "#1f2937",
+          plot_bgcolor: "#1f2937",
           font: { color: "#fff" }
         }, { responsive: true, displaylogo: false });
       }
 
       let items = null;
 
-      // Try 1: from session result
-      if (res?.shap?.feature_importance && Array.isArray(res.shap.feature_importance)) {
+      // Try 1: from session result (preferred)
+      if (res?.shap?.[targetName]?.feature_importance && Array.isArray(res.shap[targetName].feature_importance)) {
+        items = res.shap[targetName].feature_importance;
+      } else if (res?.shap?.feature_importance && Array.isArray(res.shap.feature_importance)) {
+        // Fallback if shap data is not nested by target
         items = res.shap.feature_importance;
       }
 
-      // Try 2: fetch JSON
+      // Try 2: load JSON dynamically (e.g. shap_importance_ft305.json)
       if (!items) {
         try {
-          const r = await fetch("shap_importance_pt501.json", { cache: "no-store" });
+          const shapJsonPath = `shap_importance_${targetName.toLowerCase()}.json`;
+          const r = await fetch(shapJsonPath, { cache: "no-store" });
           if (r.ok) {
             const data = await r.json();
             if (data?.feature_importance && Array.isArray(data.feature_importance)) {
@@ -316,15 +352,16 @@
 
       // Render or hide
       if (items && items.length) {
-        await drawSHAP(items.slice(0, 15));
+        await drawSHAP(items.slice(0, 15), targetName);
       } else {
         shapDiv.style.display = "none";
         meta.insertAdjacentHTML(
           "beforeend",
-          `<div class="mt-1 text-gray-400">SHAP importance not available for PT501.</div>`
+          `<div class="mt-1 text-gray-400">SHAP importance not available for ${targetName}.</div>`
         );
       }
     })();
+
 
     // === PDF Generation ===
     async function plotToPNG(divId, scale = 2) {
@@ -338,7 +375,7 @@
       const doc = new jsPDF({ unit: "mm", format: "a4" });
 
       // --- Header
-      const title = "Predictive Maintenance Report — PT501";
+      const title = "Predictive Maintenance Report — ${targetName}";
       doc.setFont("helvetica", "bold");
       doc.setFontSize(16);
       doc.text(title, 14, 16);
@@ -426,7 +463,7 @@
       }
 
       // --- Save
-      doc.save("Maintenance_Report_PT501.pdf");
+      doc.save(`Maintenance_Report_${targetName}.pdf`);
     });
   </script>
 </body>
