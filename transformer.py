@@ -91,8 +91,9 @@ def fit_cva(Yp, Yf, energy_keep=0.9):
     Sff_m12 = sym_inv_sqrt(Sff)
     H = Sff_m12 @ Sfp @ Spp_m12
     U, D, Vt = np.linalg.svd(H, full_matrices=False)
-    r = max(1, int(np.searchsorted(np.cumsum(D**2)/np.sum(D**2), energy_keep) + 1))
-    print("CVA retained components =", r)
+    # r = max(1, int(np.searchsorted(np.cumsum(D**2)/np.sum(D**2), energy_keep) + 1))
+    # print("CVA retained components =", r)
+    r=25
     Vr = Vt[:r, :].T
     J = Vr.T @ Spp_m12
     L = (np.eye(Spp_m12.shape[0]) - Vr @ Vr.T) @ Spp_m12

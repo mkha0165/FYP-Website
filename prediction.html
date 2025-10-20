@@ -29,8 +29,8 @@
 
     <div id="meta" class="mb-6 text-sm text-gray-300"></div>
 
-    <div id="plot-preds" class="rounded-xl p-4 mb-6 w-full h-[500px] "></div>
-    <div id="plot-cva"   class="rounded-xl p-4 mb-6 w-full h-[600px] "></div>
+    <div id="plot-preds" class="rounded-xl p-4 mb-6 w-full h-[500px] bg-gray-800"></div>
+    <div id="plot-cva"   class="rounded-xl p-4 mb-6 w-full h-[600px] bg-gray-800"></div>
 
     <!-- Contribution plot (with % toggle) -->
     <div class="rounded-xl p-4 mb-6 w-full bg-gray-800">
@@ -227,7 +227,7 @@
         // Masks and windows
         const maskT2  = T2.map(v => v > T2_UCL);
         const maskQ   = Q.map(v => v > Q_UCL);
-        const maskAny = maskT2.map((v,i) => v || maskQ[i]);
+        const anyMask = maskT2.map((v,i) => v || maskQ[i]);
 
         function findWindows(mask) {
           const wins = [];
@@ -240,9 +240,8 @@
         }
         const windowsT2  = findWindows(maskT2);
         const windowsQ   = findWindows(maskQ);
-        const windowsAny = findWindows(maskAny);
+        const unionWins  = findWindows(anyMask);
 
-        // traces
         const tracesCVA = [
           { x: tCVA, y: T2, mode: "lines", name: "T²", xaxis: "x",  yaxis: "y"  },
           { x: tCVA, y: tCVA.map(() => T2_UCL), mode: "lines", name: "T² UCL", line: { dash: "dash" }, xaxis: "x",  yaxis: "y"  },
@@ -250,13 +249,12 @@
           { x: tCVA, y: tCVA.map(() => Q_UCL),  mode: "lines", name: "Q UCL",  line: { dash: "dash" }, xaxis: "x2", yaxis: "y2" }
         ];
 
-        // ranges & shapes
         const capT2 = 1e4, capQ = 1e4;
         const maxT2 = Math.max(...T2), maxQ = Math.max(...Q);
         const shapes = [], annotations = [];
-        const maxWindowsToDraw = 20;
+        const maxWindowsToDraw = Infinity;
 
-        // Shade only where that subplot breaches
+        // Shade T² windows top subplot
         for (let k = 0; k < Math.min(maxWindowsToDraw, windowsT2.length); k++) {
           const [s, e] = windowsT2[k];
           const x0 = tCVA[s], x1 = tCVA[e];
@@ -270,6 +268,7 @@
             { x: x1, y: Math.min(capT2, maxT2*1.15), xref: "x", yref: "y", text: "Fault End",   showarrow: true, arrowhead: 2, ax: 0, ay: -30, font: { color: "tomato", size: 12 }, bgcolor: "rgba(255,99,71,0.15)" }
           );
         }
+        // Shade Q windows bottom subplot
         for (let k = 0; k < Math.min(maxWindowsToDraw, windowsQ.length); k++) {
           const [s, e] = windowsQ[k];
           const x0 = tCVA[s], x1 = tCVA[e];
@@ -305,39 +304,37 @@
         meta.insertAdjacentHTML("beforeend",
           `<div class="mt-1">Q breach rate: <strong>${(breachRateQ*100).toFixed(2)}%</strong></div>`);
 
-        // Build union ranges for PDF/table
-        const unionWins = (function findUnion(mask) {
-          const wins = []; let i=0;
-          while (i < mask.length) {
-            if (mask[i]) { const s=i; while (i<mask.length && mask[i]) i++; wins.push([s,i-1]); }
-            else i++;
-          }
-          return wins;
-        })(maskT2.map((v,i)=> v || maskQ[i]));
+        // Build faultRanges with duration (seconds if timestamps) and filter out zero/negative
+        const faultRanges = unionWins
+          .map(([s, e]) => {
+            const x0 = tCVA[s], x1 = tCVA[e];
 
-        const faultRanges = unionWins.map(([s,e]) => {
-          const x0 = tCVA[s], x1 = tCVA[e];
-          let durationLabel = "—";
-          const d0 = new Date(x0), d1 = new Date(x1);
-          if (!isNaN(d0) && !isNaN(d1)) {
-            const secs = (d1 - d0);
-            durationLabel = `${secs.toFixed(1)} s`;
-          } else if (isFinite(Number(x0)) && isFinite(Number(x1))) {
-            durationLabel = String(Number(x1) - Number(x0));
-          }
-          return {
-            startIdx: s, endIdx: e,
-            start: String(x0), end: String(x1),
-            durationLabel,
-            maxT2: Math.max(...T2.slice(s,e+1)),
-            maxQ: Math.max(...Q.slice(s,e+1))
-          };
-        });
+            let duration = NaN;
+            let durationLabel = "—";
+
+            const d0 = new Date(x0), d1 = new Date(x1);
+            if (!isNaN(d0) && !isNaN(d1)) {
+              duration = (d1 - d0) / 1000;   // seconds
+              durationLabel = `${duration.toFixed(1)} s`;
+            } else if (isFinite(Number(x0)) && isFinite(Number(x1))) {
+              duration = Number(x1) - Number(x0); // raw numeric difference
+              durationLabel = String(duration);
+            }
+
+            return {
+              startIdx: s, endIdx: e,
+              start: String(x0), end: String(x1),
+              duration, durationLabel,
+              maxT2: Math.max(...T2.slice(s, e + 1)),
+              maxQ: Math.max(...Q.slice(s, e + 1))
+            };
+          })
+          .filter(r => isFinite(r.duration) && r.duration > 0); // <-- keep only positive duration
 
         window.ReportData.cva = { t: tCVA, T2, Q, T2_UCL, Q_UCL, faultRanges };
       })();
 
-      // === Contribution plot (supports %)
+      // === Contribution chart (page) + compute Top-3 for PDF ===
       function renderContrib(kStar) {
         const container = document.getElementById("plot-contrib");
         const contrib = res.cva?.contrib;
@@ -379,8 +376,8 @@
         const xTot    = order.map(i=> valsTot[i]);
         const xQ      = order.map(i=> valsQ[i]);
 
-        // Store Top-3 for PDF
-        const top3Idx = order.slice(0,3);
+        // Store Top-3 for PDF (with human-friendly notes)
+        const top3Idx = order.slice(0, 3);
         const top3 = top3Idx.map(i => ({
           name: names[i],
           retained_abs: valsTotRaw[i],
@@ -439,8 +436,7 @@
         renderContrib(k);
       });
 
-      // === PDF Generation (summary includes breach rates; tiered recommendation;
-      // Contribution chart moved right AFTER the Key Influencing Variables section) ===
+      // === PDF Generation with order + contribution chart + Top-3 elaboration ===
       function fmtNum(x) {
         if (x == null || !isFinite(x)) return "—";
         if (Math.abs(x) >= 1e6 || (Math.abs(x) > 0 && Math.abs(x) < 1e-2)) return x.toExponential(2);
@@ -471,110 +467,51 @@
         const rd = window.ReportData || {};
         const cva = rd.cva || {};
 
-        // breach flags
-        const t2Breach = Array.isArray(cva.T2) && isFinite(cva.T2_UCL) ? cva.T2.some(v => v > cva.T2_UCL) : false;
-        const qBreach  = Array.isArray(cva.Q) && isFinite(cva.Q_UCL)  ? cva.Q.some(v => v > cva.Q_UCL)  : false;
+        const t2BreachRate = (typeof breachRateT2 === "number") ? breachRateT2 : 0;
+        const qBreachRate  = (typeof breachRateQ  === "number") ? breachRateQ  : 0;
 
         let y = 30 + (titleLines.length - 1) * 6;
 
-        // 1) Summary (now includes breach rate %)
+        // --- (1) Predicted values chart FIRST ---
+        const predsPNG = await plotToPNG("plot-preds", 2);
+        const IMG_W = PAGE_W - LM - RM;
+        const IMG_H = IMG_W * 0.55;
+        if (y + IMG_H > PAGE_H - 16) { doc.addPage(); y = 16; }
         doc.setFont("helvetica","bold"); doc.setFontSize(12);
-        doc.text("1) Summary", LM, y); y += 5.5;
+        doc.text("1) Predicted vs Actual", LM, y); y += 4;
+        doc.addImage(predsPNG, "PNG", LM, y, IMG_W, IMG_H);
+        y += IMG_H + 6;
+
+        // Page break after predicted vs actual
+        doc.addPage();
+        y = 16;
+
+        // --- (2) Summary (with breach rates) ---
+        doc.setFont("helvetica","bold"); doc.setFontSize(12);
+        doc.text("2) Summary", LM, y); y += 5.5;
         doc.setFont("helvetica","normal"); doc.setFontSize(10);
-        doc.text(`T² exceeded UCL: ${t2Breach ? "Yes" : "No"} — Breach rate: ${(breachRateT2*100).toFixed(2)}% (UCL=${fmtNum(cva.T2_UCL)})`, LM, y); y += 4.5;
-        doc.text(`Q exceeded UCL:  ${qBreach  ? "Yes" : "No"} — Breach rate: ${(breachRateQ*100).toFixed(2)}% (UCL=${fmtNum(cva.Q_UCL)})`, LM, y); y += 7;
+        doc.text(`T² breach rate: ${(t2BreachRate*100).toFixed(2)}% (UCL=${fmtNum(cva.T2_UCL)})`, LM, y); y += 4.5;
+        doc.text(`Q breach rate:  ${(qBreachRate*100).toFixed(2)}% (UCL=${fmtNum(cva.Q_UCL)})`,  LM, y); y += 8;
 
-        // 2) Maintenance Recommendation (tiered by breach rate)
+        // --- (3) Abnormal Time Windows + CVA chart ---
         doc.setFont("helvetica","bold"); doc.setFontSize(12);
-        doc.text("2) Maintenance Recommendation", LM, y); y += 5.5;
-        doc.setFont("helvetica","normal"); doc.setFontSize(10);
-
-        let rec = "";
-        const brT = breachRateT2, brQ = breachRateQ;
-
-        if (brT > 0.2 && brQ > 0.2) {
-          rec = "Emergency: Sustained anomalies detected in both T² and Q (breach rate > 20%). Perform immediate shutdown inspection and root-cause analysis. Verify sensor health, check valve actuation, and validate separator pressure control.";
-        } else if (brT > 0.1 || brQ > 0.1) {
-          rec = "Prompt attention: Persistent anomalies detected (breach rate > 10%). Schedule inspection within 24–48 hours; monitor trends closely and consider temporary setpoint adjustments if safe.";
-        } else if (brT > 0 || brQ > 0) {
-          rec = "Monitor and plan: Intermittent breaches observed. Schedule maintenance at the next available window and enable tighter runtime monitoring/alerts.";
-        } else {
-          rec = "System operating within control limits. No immediate action required.";
-        }
-
-        const recLines = doc.splitTextToSize(rec, PAGE_W - LM - RM);
-        doc.text(recLines, LM, y);
-        y += recLines.length * 4.2 + 2;
-
-        // Key Influencing Variables (Top 3)
-        const top3 = (window.ReportData.top3 && window.ReportData.top3.items) ? window.ReportData.top3.items : [];
-        const kStarForText = (window.ReportData.top3 && Number.isFinite(window.ReportData.top3.k)) ? window.ReportData.top3.k : null;
-
-        if (top3.length) {
-          doc.setFont("helvetica","bold"); doc.setFontSize(12);
-          doc.text("Key Influencing Variables (Top 3)", LM, y);
-          y += 5;
-
-          doc.setFont("helvetica","normal"); doc.setFontSize(10);
-          const header = kStarForText != null
-            ? `At time index t=${kStarForText}, the variables with the highest contributions to the anomaly are:`
-            : `The variables with the highest contributions to the anomaly are:`;
-          const headerLines = doc.splitTextToSize(header, PAGE_W - LM - RM);
-          doc.text(headerLines, LM, y);
-          y += headerLines.length * 4.2 + 1.8;
-
-          top3.forEach((item, idx) => {
-            if (y > PAGE_H - 20) { doc.addPage(); y = 16; }
-            doc.setFont("helvetica","bold");
-            doc.text(`${idx + 1}) ${item.name}`, LM, y);
-            y += 4.2;
-
-            doc.setFont("helvetica","normal");
-            const descLines = doc.splitTextToSize(`${item.name}: ${item.note || ""}`, PAGE_W - LM - RM);
-            doc.text(descLines, LM + 4, y);
-            y += descLines.length * 4.2;
-
-            const metrics = `Retained |C| = ${fmtNum(item.retained_abs)}, Residual Q = ${fmtNum(item.residual_abs)}`;
-            doc.text(metrics, LM + 4, y);
-            y += 6;
-          });
-
-          // === Contribution chart placed right AFTER the Top-3 list ===
-          const contribPNG = await plotToPNG("plot-contrib", 2);
-          const IMG_W = PAGE_W - LM - RM;
-          const IMG_H = IMG_W * 0.55;
-          if (y + IMG_H > PAGE_H - 16) { doc.addPage(); y = 16; }
-          doc.addImage(contribPNG, "PNG", LM, y, IMG_W, IMG_H);
-          y += IMG_H + 6;
-
-          const varNames = top3.map(x => x.name).join(", ");
-          const summary =
-            `These variables contributed most to the detected anomaly. Inspect sensors and components associated with ${varNames}, ` +
-            `consider recalibration, and confirm process constraints to restore stable operation.`;
-          const summaryLines = doc.splitTextToSize(summary, PAGE_W - LM - RM);
-          doc.text(summaryLines, LM, y);
-          y += summaryLines.length * 4.2 + 2;
-        }
-
-        // 3) Abnormal Time Windows (union)
-        doc.setFont("helvetica","bold"); doc.setFontSize(12);
-        if (y > PAGE_H - 20) { doc.addPage(); y = 16; }
         doc.text("3) Abnormal Time Windows (exceeded threshold)", LM, y); y += 6;
         doc.setFont("helvetica","normal"); doc.setFontSize(10);
 
-        const col = { no: LM + 2, start: LM + 24, end: LM + 74, dur: LM + 124};
+        const col = { no: LM + 2, start: LM + 24, end: LM + 74, dur: LM + 124 };
         doc.text("No.", col.no, y);
         doc.text("Start", col.start, y);
         doc.text("End", col.end, y);
         doc.text("Duration", col.dur, y);
         y += 4;
 
-        const rows = Array.isArray(cva.faultRanges) ? cva.faultRanges : [];
+        const rows = Array.isArray(cva.faultRanges)
+          ? cva.faultRanges.filter(r => isFinite(r.duration) && r.duration > 0)  // only non-zero durations
+          : [];
         const ROW_H = 5;
-
         for (let i = 0; i < rows.length; i++) {
           const r = rows[i];
-          if (y > PAGE_H - 20) { doc.addPage(); y = 20; }
+          if (y > PAGE_H - 30) { doc.addPage(); y = 16; }
           doc.text(String(i + 1), col.no, y);
           doc.text(String(r.start ?? "—"), col.start, y);
           doc.text(String(r.end   ?? "—"), col.end,   y);
@@ -582,28 +519,79 @@
           y += ROW_H;
         }
 
-        // 4) Diagnostic Charts (preds + CVA)
-        if (y > PAGE_H - 40) { doc.addPage(); y = 16; } else { y += 3; }
+        const cvaPNG = await plotToPNG("plot-cva", 2);
+        if (y + IMG_H > PAGE_H - 16) { doc.addPage(); y = 16; }
+        doc.addImage(cvaPNG, "PNG", LM, y, IMG_W, IMG_H);
+        y += IMG_H + 6;
+
+        // Page break before maintenance section (optional for clarity)
+        doc.addPage();
+        y = 16;
+
+        // --- (4) Maintenance Recommendation (includes Top-3 + Contribution plot + Inspect note) ---
         doc.setFont("helvetica","bold"); doc.setFontSize(12);
-        doc.text("4) Diagnostic Charts", LM, y);
-        y += 4;
+        doc.text("4) Maintenance Recommendation", LM, y); y += 5.5;
         doc.setFont("helvetica","normal"); doc.setFontSize(10);
 
-        const predsPNG   = await plotToPNG("plot-preds", 2);
-        const cvaPNG     = await plotToPNG("plot-cva", 2);
-
-        const IMG_W2 = PAGE_W - LM - RM;
-        const IMG_H2 = IMG_W2 * 0.55;
-        const GAP   = 8;
-        function placeImage(png) {
-          if (!png) return;
-          if (y + IMG_H2 > PAGE_H - 16) { doc.addPage(); y = 16; }
-          doc.addImage(png, "PNG", LM, y, IMG_W2, IMG_H2);
-          y += IMG_H2 + GAP;
+        let rec = "";
+        if (t2BreachRate > 0.20 && qBreachRate > 0.20) {
+          rec = "Emergency: Sustained anomalies detected in both T² and Q (breach rate > 20%). Perform immediate shutdown inspection and root-cause analysis. Verify sensor health, check valve actuation, and validate separator pressure control.";
+        } else if (t2BreachRate > 0.10 || qBreachRate > 0.10) {
+          rec = "Prompt attention: Persistent anomalies detected (breach rate > 10%). Schedule inspection within 24–48 hours; monitor trends closely and consider temporary setpoint adjustments if safe.";
+        } else if (t2BreachRate > 0 || qBreachRate > 0) {
+          rec = "Monitor and plan: Intermittent breaches observed. Schedule maintenance at the next available window and tighten runtime monitoring/alerts.";
+        } else {
+          rec = "System operating within control limits. No immediate action required.";
         }
-        placeImage(predsPNG);
-        placeImage(cvaPNG);
+        const recLines = doc.splitTextToSize(rec, PAGE_W - LM - RM);
+        doc.text(recLines, LM, y);
+        y += recLines.length * 4.2 + 2;
 
+        // Top-3 variables elaboration
+        const top3 = (window.ReportData.top3 && window.ReportData.top3.items) ? window.ReportData.top3.items : [];
+        const kStarForText = (window.ReportData.top3 && Number.isFinite(window.ReportData.top3.k)) ? window.ReportData.top3.k : null;
+
+        if (top3.length) {
+          doc.setFont("helvetica","bold");
+          doc.text("Key Influencing Variables (Top 3)", LM, y); y += 5;
+
+          doc.setFont("helvetica","normal");
+          const header = kStarForText != null
+            ? `At time index t=${kStarForText}, the variables with the highest contributions were:`
+            : `Variables with the highest contributions:`;
+          const headerLines = doc.splitTextToSize(header, PAGE_W - LM - RM);
+          doc.text(headerLines, LM, y); y += headerLines.length * 4.2 + 1.5;
+
+          top3.forEach((item, idx) => {
+            if (y > PAGE_H - 20) { doc.addPage(); y = 16; }
+            doc.setFont("helvetica","bold");
+            doc.text(`${idx + 1}) ${item.name}`, LM, y); y += 4;
+            doc.setFont("helvetica","normal");
+            const line = `${item.note || "Process variable"} — Retained |C| = ${fmtNum(item.retained_abs)}, Residual Q = ${fmtNum(item.residual_abs)}`;
+            const lines = doc.splitTextToSize(line, PAGE_W - LM - RM);
+            doc.text(lines, LM + 4, y); y += lines.length * 4.2 + 2;
+          });
+
+          // Contribution chart in PDF
+          const contribPNG = await plotToPNG("plot-contrib", 2);
+          const IMG_W2 = PAGE_W - LM - RM;
+          const IMG_H2 = IMG_W2 * 0.55;
+          if (y + IMG_H2 > PAGE_H - 16) { doc.addPage(); y = 16; }
+          doc.addImage(contribPNG, "PNG", LM, y, IMG_W2, IMG_H2);
+          y += IMG_H2 + 4;
+
+          // Inspect note
+          const varNames = top3.map(x => x.name).join(", ");
+          const inspectNote =
+            `Action: Inspect sensors/actuators and process components associated with ${varNames}. ` +
+            `Verify calibration and wiring, check for sticking valves or drifts, and confirm control strategy for these loops. ` +
+            `Addressing these variables should reduce T² (model-consistent excursions) and Q (model mismatch).`;
+          const inspectLines = doc.splitTextToSize(inspectNote, PAGE_W - LM - RM);
+          doc.text(inspectLines, LM, y);
+          y += inspectLines.length * 4.2 + 2;
+        }
+
+        // Save
         doc.save(`Maintenance_Report_${targetName}.pdf`);
       });
 
