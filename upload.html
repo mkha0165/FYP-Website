@@ -38,21 +38,21 @@
         </button>
       </div>
 
-    <h2 class="text-2xl font-bold text-white mb-6">Upload CSV File</h2>
+      <h2 class="text-2xl font-bold text-white mb-6">Upload CSV File</h2>
 
-    <!-- 🧠 New: Target Variable Dropdown -->
-    <div class="mb-6">
-      <label for="targetSelect" class="block text-white text-lg mb-2 font-medium">Select Target Variable</label>
-      <select id="targetSelect"
-        class="w-full bg-white/20 text-white p-3 rounded-xl text-center border border-white/30 focus:outline-none">
-        <option value="PT501">PT501 - Pressure in 3 Phase Separator</option>
-        <option value="FT305">FT305 - Flow Rate Input Air</option>
-        <option value="FT104">FT104 - Density Water Input</option>
-        <option value="FT407">FT407 - Temperature Top Riser</option>
-        <option value="LI504">LI504 - Level Gas-Liquid 3 Phase Separator</option>
-        <option value="VC501">VC501 - Position of Valve</option>
-      </select>
-    </div>
+      <!-- Target selector -->
+      <div class="mb-6">
+        <label for="targetSelect" class="block text-white text-lg mb-2 font-medium">Select Target Variable</label>
+        <select id="targetSelect"
+          class="w-full bg-white/20 text-white p-3 rounded-xl text-center border border-white/30 focus:outline-none">
+          <option value="PT501">PT501 - Pressure in 3 Phase Separator</option>
+          <option value="FT305">FT305 - Flow Rate Input Air</option>
+          <option value="FT104">FT104 - Density Water Input</option>
+          <option value="FT407">FT407 - Temperature Top Riser</option>
+          <option value="LI504">LI504 - Level Gas-Liquid 3 Phase Separator</option>
+          <option value="VC501">VC501 - Position of Valve</option>
+        </select>
+      </div>
 
       <div id="dropZone"
         class="bg-white/20 border-2 border-dashed border-white/50 rounded-xl p-10 text-white mb-4 cursor-pointer"
@@ -154,7 +154,7 @@
       browseBtn.disabled = true;
       dropZone.classList.add("pointer-events-none", "opacity-60");
 
-      const url = `${BASE_API}?target=${target}`;
+      const url = `${BASE_API}?target=${encodeURIComponent(target)}`;
       const res = await fetch(url, { method: "POST", body: formData });
 
       browseBtn.disabled = false;
@@ -164,7 +164,6 @@
         const msg = await res.text();
         throw new Error(msg || "Upload failed");
       }
-
       return res.json();
     }
 
@@ -179,9 +178,10 @@
       try {
         const result = await postFileToAPI(file, target);
 
-        // Put big payload into IndexedDB; store pointer in sessionStorage
+        // Put big payload into IndexedDB; store pointer + selectedTarget in sessionStorage
         const pointer = await idbPutResult(result);
         sessionStorage.setItem("predictionPointer", pointer);
+        sessionStorage.setItem("selectedTarget", target);
         sessionStorage.removeItem("predictionResult"); // ensure old key is gone
 
         uploadStatus.innerHTML = `<span class="text-green-400 font-semibold">${file.name} processed successfully. Redirecting…</span>`;
@@ -189,8 +189,6 @@
         // Save compact history entry: only pointer + dataset_id
         await saveToHistory(file.name, { pointer, dataset_id: result?.dataset_id ?? null });
 
-        sessionStorage.setItem("predictionResult", JSON.stringify(result));
-        sessionStorage.setItem("selectedTarget", target);
         window.location.href = "prediction.html";
       } catch (err) {
         uploadStatus.innerHTML = `<div class="text-red-400 mt-2 break-words">Error: ${err.message}</div>`;

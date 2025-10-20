@@ -370,35 +370,3 @@ async def predict(file: UploadFile = File(...), target: str = "PT501"):
     LAST_RESULT = result
     return JSONResponse(result)
 
-
-def build_pdf_from_result(result: dict, shap_importance=None, target="TARGET"):
-    from io import BytesIO
-    from reportlab.lib.pagesizes import A4
-    from reportlab.pdfgen import canvas
-
-    buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    c.setFont("Helvetica", 12)
-    c.drawString(100, 800, f"Soft Sensor Report for Target: {target}")
-    c.drawString(100, 780, "Summary metrics:")
-
-    metrics = result.get("metrics", {})
-    y = 760
-    for name, m in metrics.items():
-        c.drawString(120, y, f"{name}: RMSE={m['rmse']:.4f}, MAE={m['mae']:.4f}, R²={m['r2']:.4f}")
-        y -= 20
-
-    c.showPage()
-    c.save()
-    buffer.seek(0)
-    return buffer.read()
-
-# ---------- Optional: on-demand PDF report ----------
-@app.post("/report/pdf")
-def make_report(shap: dict | None = Body(default=None)):
-    global LAST_RESULT
-    if LAST_RESULT is None:
-        return Response(content="No prediction result available. Run /predict first.", status_code=400)
-    pdf_bytes = build_pdf_from_result(LAST_RESULT, shap_importance=shap, target=TARGETS[0] if TARGETS else "TARGET")
-    return Response(content=pdf_bytes, media_type="application/pdf",
-                    headers={"Content-Disposition": 'attachment; filename="softsensor_report.pdf"'})
