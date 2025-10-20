@@ -32,11 +32,11 @@
 
     <div id="meta" class="mb-6 text-sm text-gray-300"></div>
 
-    <div id="plot-preds" class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[500px]"></div>
-    <div id="plot-cva"   class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[600px]"></div>
+    <div id="plot-preds" class="rounded-xl p-4 mb-6 w-full h-[500px]"></div>
+    <div id="plot-cva"   class="rounded-xl p-4 mb-6 w-full h-[600px]"></div>
 
     <!-- Contribution plot (with % toggle) -->
-    <div class="bg-gray-800 rounded-xl p-4 mb-6 w-full">
+    <div class="rounded-xl p-4 mb-6 w-full">
       <div class="flex items-center justify-between mb-2">
         <h2 class="text-lg font-semibold">Contribution (C) – Top Drivers</h2>
         <div class="flex items-center gap-3 text-sm text-gray-300">
@@ -55,8 +55,6 @@
       </p>
       <div id="plot-contrib" class="w-full h-[520px]"></div>
     </div>
-
-    <div id="plot-shap"  class="bg-gray-800 rounded-xl p-4 mb-6 w-full h-[500px]"></div>
 
     <div class="flex gap-3">
       <button id="btnReport"
@@ -367,7 +365,7 @@
             const x0=tCVA[s], x1=tCVA[e];
             let durationLabel="—";
             const d0=new Date(x0), d1=new Date(x1);
-            if (!isNaN(d0) && !isNaN(d1)) durationLabel=((d1-d0)/1000).toFixed(1)+" s";
+            if (!isNaN(d0) && !isNaN(d1)) durationLabel=((d1-d0)).toFixed(1)+" s";
             else if (isFinite(Number(x0)) && isFinite(Number(x1))) durationLabel=String(Number(x1)-Number(x0));
             return {
               startIdx:s, endIdx:e, start:String(x0), end:String(x1),
@@ -479,70 +477,6 @@
         const k = window.ReportData?.contribAt ?? 0;
         renderContrib(k);
       });
-
-    // === SHAP feature importance (robust: from res, or JSON, else hide) ===
-    (async function renderSHAP() {
-      const shapDiv = document.getElementById("plot-shap");
-      const meta = document.getElementById("meta");
-
-      function drawSHAP(items, targetName) {
-        const x = items.map(d => d.feature);
-        const y = items.map(d => d.score);
-
-        return Plotly.newPlot("plot-shap", [{
-          type: "bar",
-          x,
-          y,
-          name: "Impact (mean |SHAP|)"
-        }], {
-          title: `Which sensors influence ${targetName} predictions?`,
-          margin: { t: 40, r: 20, b: 80, l: 60 },
-          xaxis: { tickangle: -30 },
-          yaxis: { title: "Mean |SHAP| (aggregated over time)" },
-          paper_bgcolor: "#1f2937",
-          plot_bgcolor: "#1f2937",
-          font: { color: "#fff" }
-        }, { responsive: true, displaylogo: false });
-      }
-
-        let items = null;
-
-      // Try 1: from session result (preferred)
-      if (res?.shap?.[targetName]?.feature_importance && Array.isArray(res.shap[targetName].feature_importance)) {
-        items = res.shap[targetName].feature_importance;
-      } else if (res?.shap?.feature_importance && Array.isArray(res.shap.feature_importance)) {
-        // Fallback if shap data is not nested by target
-        items = res.shap.feature_importance;
-      }
-
-      // Try 2: load JSON dynamically (e.g. shap_importance_ft305.json)
-      if (!items) {
-        try {
-          const shapJsonPath = `shap_importance_${targetName.toLowerCase()}.json`;
-          const r = await fetch(shapJsonPath, { cache: "no-store" });
-          if (r.ok) {
-            const data = await r.json();
-            if (data?.feature_importance && Array.isArray(data.feature_importance)) {
-              items = data.feature_importance;
-            }
-          }
-        } catch (e) {
-          console.warn("SHAP fetch failed:", e);
-        }
-      }
-
-      // Render or hide
-      if (items && items.length) {
-        await drawSHAP(items.slice(0, 15), targetName);
-      } else {
-        shapDiv.style.display = "none";
-        meta.insertAdjacentHTML(
-          "beforeend",
-          `<div class="mt-1 text-gray-400">SHAP importance not available for ${targetName}.</div>`
-        );
-      }
-    })();
-
 
       // === PDF Generation (unchanged layout, now includes contrib top-3) ===
       function fmtNum(x) {
@@ -672,12 +606,11 @@
         doc.text("3) Abnormal Time Windows (exceeded threshold)", LM, y); y += 6;
         doc.setFont("helvetica","normal"); doc.setFontSize(10);
 
-        const col = { no: LM + 2, start: LM + 24, end: LM + 74, dur: LM + 124, max: RIGHT };
+        const col = { no: LM + 2, start: LM + 24, end: LM + 74, dur: LM + 124};
         doc.text("No.", col.no, y);
         doc.text("Start", col.start, y);
         doc.text("End", col.end, y);
         doc.text("Duration", col.dur, y);
-        rightText(doc, "Max T² / Q", col.max, y);
         y += 4;
 
         const rows = Array.isArray(cva.faultRanges) ? cva.faultRanges : [];
@@ -690,7 +623,6 @@
           doc.text(String(r.start ?? "—"), col.start, y);
           doc.text(String(r.end   ?? "—"), col.end,   y);
           doc.text(r.durationLabel || "—", col.dur, y);
-          rightText(doc, `${fmtNum(r.maxT2)} / ${fmtNum(r.maxQ)}`, col.max, y);
           y += ROW_H;
         }
 
@@ -704,9 +636,6 @@
         const predsPNG   = await plotToPNG("plot-preds", 2);
         const cvaPNG     = await plotToPNG("plot-cva", 2);
         const contribPNG = await plotToPNG("plot-contrib", 2);
-        let shapPNG = null;
-        const shapEl = document.getElementById("plot-shap");
-        if (shapEl && shapEl.data) shapPNG = await plotToPNG("plot-shap", 2);
 
         const IMG_W = PAGE_W - LM - RM;
         const IMG_H = IMG_W * 0.55; // maintain roughly 16:9 ratio (adjust 0.55 as needed)
@@ -722,7 +651,6 @@
         placeImage(predsPNG);
         placeImage(cvaPNG);
         placeImage(contribPNG);
-        placeImage(shapPNG);
 
         doc.save(`Maintenance_Report_${targetName}.pdf`);
       });
@@ -737,8 +665,6 @@
       window.addEventListener("resize", () => {
         Plotly.Plots.resize("plot-preds");
         Plotly.Plots.resize("plot-cva");
-        const shap = document.getElementById("plot-shap");
-        if (shap && shap.data) Plotly.Plots.resize("plot-shap");
         Plotly.Plots.resize("plot-contrib");
       });
     })();
