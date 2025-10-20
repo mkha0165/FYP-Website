@@ -38,7 +38,7 @@
         <h2 class="text-lg font-semibold">Contribution (C) – Top Drivers</h2>
         <div class="flex items-center gap-3 text-sm text-gray-300">
           Focus @ t:
-          <input id="kSelect" type="number" class="w-24 bg-gray-700 rounded-lg px-2 py-1" value="0" />
+          <input id="kSelect" type="text" class="w-40 bg-gray-700 rounded-lg px-2 py-1" value="0" />
           <label class="inline-flex items-center gap-2 select-none">
             <input id="asPercent" type="checkbox" class="accent-blue-500">
             Show as %
@@ -48,7 +48,7 @@
       </div>
       <p class="text-xs text-gray-400 mb-2">
         Bars show variable-level contributions at the selected time index (retained-space C and residual-space Q).
-        Toggle “Show as %” to normalize each set to 100% at that time.
+        Toggle “Show as %” to normalize each set to 100% at that time. You can type a time value (e.g., timestamp) or a raw index above.
       </p>
       <div id="plot-contrib" class="w-full h-[520px]"></div>
     </div>
@@ -314,10 +314,10 @@
 
             const d0 = new Date(x0), d1 = new Date(x1);
             if (!isNaN(d0) && !isNaN(d1)) {
-              duration = (d1 - d0);   // seconds
+              duration = (d1 - d0);  // seconds
               durationLabel = `${duration.toFixed(1)} s`;
             } else if (isFinite(Number(x0)) && isFinite(Number(x1))) {
-              duration = Number(x1) - Number(x0); // raw numeric difference
+              duration = Number(x1) - Number(x0); // numeric difference
               durationLabel = String(duration);
             }
 
@@ -329,15 +329,52 @@
               maxQ: Math.max(...Q.slice(s, e + 1))
             };
           })
-          .filter(r => isFinite(r.duration) && r.duration > 0); // <-- keep only positive duration
+          .filter(r => isFinite(r.duration) && r.duration > 0); // keep only positive duration
 
         window.ReportData.cva = { t: tCVA, T2, Q, T2_UCL, Q_UCL, faultRanges };
+
+        // ---- Default selection: first abnormal window with non-zero duration
+        let defaultKIndex = null;
+        let defaultKTime  = null;
+
+        if (faultRanges.length > 0) {
+          defaultKIndex = faultRanges[0].startIdx;   // internal index
+          defaultKTime  = faultRanges[0].start;      // display value
+        } else {
+          // Fallback: first breach or max normalized
+          const T2N = T2_UCL ? T2.map(v => v / T2_UCL) : T2;
+          const QN  = Q_UCL  ? Q.map(v => v / Q_UCL)   : Q;
+          for (let i = 0; i < Math.min(T2N.length, QN.length); i++) {
+            if (T2N[i] > 1 || QN[i] > 1) { defaultKIndex = i; break; }
+          }
+          if (defaultKIndex == null) {
+            let best = -Infinity, arg = 0;
+            for (let i = 0; i < Math.min(T2N.length, QN.length); i++) {
+              const s = Math.max(T2N[i], QN[i]); if (s >= best) { best = s; arg = i; }
+            }
+            defaultKIndex = arg;
+          }
+          defaultKTime = String(tCVA[defaultKIndex] ?? defaultKIndex);
+        }
+
+        // Save both forms
+        window.ReportData.contribAt      = defaultKIndex;
+        window.ReportData.contribAt_time = defaultKTime;
+
+        // Pre-fill the input with the time VALUE
+        const kInput = document.getElementById("kSelect");
+        if (kInput) kInput.value = defaultKTime;
       })();
 
       // === Contribution chart (page) + compute Top-3 for PDF ===
       function renderContrib(kStar) {
         const container = document.getElementById("plot-contrib");
         const contrib = res.cva?.contrib;
+        const cvaT = window.ReportData?.cva?.t || [];
+        const kTimeLabel = (window.ReportData && window.ReportData.contribAt_time != null)
+          ? window.ReportData.contribAt_time
+          : (cvaT[kStar] ?? kStar);
+
         if (!contrib) {
           container.innerHTML = "<div class='text-yellow-400'>Contribution arrays not available.</div>";
           return;
@@ -396,41 +433,57 @@
         const layout = {
           margin: { t: 40, r: 20, b: 40, l: 160 },
           barmode: "group",
-          title: `Contribution (Top ${labels.length}) @ t=${kStar}` + (asPercent ? " — % of total" : ""),
+          title: `Contribution (Top ${labels.length}) @ t=${kTimeLabel}` + (asPercent ? " — % of total" : ""),
           xaxis: { title: asPercent ? "Share of total (%)" : "Magnitude (absolute)", range: asPercent ? [0, 100] : undefined }
         };
         Plotly.newPlot("plot-contrib", traces, layout, {responsive:true, displaylogo:false});
 
         window.ReportData.contribAt = kStar;
+        window.ReportData.contribAt_time = kTimeLabel;
       }
 
-      // pick default k* = first breach or max of normed
-      (function pickDefaultK() {
-        const T2 = res.cva?.T2 || [], Q = res.cva?.Q || [];
-        const T2_UCL = Number(res.cva?.T2_UCL ?? 0);
-        const Q_UCL  = Number(res.cva?.Q_UCL  ?? 0);
-        const T2N = T2_UCL ? T2.map(v=>v/T2_UCL) : T2;
-        const QN  = Q_UCL  ? Q.map(v=>v/Q_UCL)   : Q;
-        let kStar = -1;
-        for (let i=0;i<Math.min(T2N.length, QN.length);i++){
-          if (T2N[i] > 1 || QN[i] > 1) { kStar = i; break; }
-        }
-        if (kStar < 0) {
-          let best=-Infinity, arg=0;
-          for (let i=0;i<Math.min(T2N.length, QN.length);i++){
-            const s=Math.max(T2N[i],QN[i]); if (s>=best){best=s; arg=i;}
-          }
-          kStar=arg;
-        }
-        window.ReportData.contribAt = kStar;
-      })();
-
+      // First render at the default picked by CVA step
       renderContrib(window.ReportData.contribAt ?? 0);
+
+      // Apply button: accept time value or index
       document.getElementById("btnApplyK").addEventListener("click", () => {
-        const v = parseInt(document.getElementById("kSelect").value, 10);
-        const k = isNaN(v) ? (window.ReportData?.contribAt ?? 0) : v;
+        const raw = document.getElementById("kSelect").value.trim();
+        const tArr = (window.ReportData.cva && window.ReportData.cva.t) || [];
+
+        // 1) Exact string match on t values
+        let found = tArr.findIndex(v => String(v) === String(raw));
+
+        // 2) If not found and numeric, snap to nearest numeric t
+        if (found < 0) {
+          const rawNum = Number(raw);
+          if (isFinite(rawNum)) {
+            let best = -1, bestDiff = Infinity;
+            for (let i = 0; i < tArr.length; i++) {
+              const vi = Number(tArr[i]);
+              if (isFinite(vi)) {
+                const d = Math.abs(vi - rawNum);
+                if (d < bestDiff) { bestDiff = d; best = i; }
+              }
+            }
+            if (best >= 0) found = best;
+          }
+        }
+
+        // 3) If still not found, treat as explicit integer index
+        if (found < 0) {
+          const v = parseInt(raw, 10);
+          if (!Number.isNaN(v) && v >= 0 && v < tArr.length) {
+            found = v;
+          }
+        }
+
+        // 4) Apply if valid; else keep previous
+        const k = (found >= 0) ? found : (window.ReportData?.contribAt ?? 0);
+        window.ReportData.contribAt = k;
+        window.ReportData.contribAt_time = (tArr[k] ?? k);
         renderContrib(k);
       });
+
       document.getElementById("asPercent").addEventListener("change", () => {
         const k = window.ReportData?.contribAt ?? 0;
         renderContrib(k);
@@ -506,7 +559,7 @@
         y += 4;
 
         const rows = Array.isArray(cva.faultRanges)
-          ? cva.faultRanges.filter(r => isFinite(r.duration) && r.duration > 0)  // only non-zero durations
+          ? cva.faultRanges.filter(r => isFinite(r.duration) && r.duration > 0)
           : [];
         const ROW_H = 5;
         for (let i = 0; i < rows.length; i++) {
@@ -524,7 +577,7 @@
         doc.addImage(cvaPNG, "PNG", LM, y, IMG_W, IMG_H);
         y += IMG_H + 6;
 
-        // Page break before maintenance section (optional for clarity)
+        // Page break before maintenance section
         doc.addPage();
         y = 16;
 
@@ -547,17 +600,19 @@
         doc.text(recLines, LM, y);
         y += recLines.length * 4.2 + 2;
 
-        // Top-3 variables elaboration
+        // Top-3 variables elaboration (time value in header)
         const top3 = (window.ReportData.top3 && window.ReportData.top3.items) ? window.ReportData.top3.items : [];
-        const kStarForText = (window.ReportData.top3 && Number.isFinite(window.ReportData.top3.k)) ? window.ReportData.top3.k : null;
+        const kTimeForText = (window.ReportData && window.ReportData.contribAt_time != null)
+          ? window.ReportData.contribAt_time
+          : ((window.ReportData.top3 && Number.isFinite(window.ReportData.top3.k)) ? window.ReportData.top3.k : null);
 
         if (top3.length) {
           doc.setFont("helvetica","bold");
           doc.text("Key Influencing Variables (Top 3)", LM, y); y += 5;
 
           doc.setFont("helvetica","normal");
-          const header = kStarForText != null
-            ? `At time index t=${kStarForText}, the variables with the highest contributions were:`
+          const header = kTimeForText != null
+            ? `At time index t=${kTimeForText}, the variables with the highest contributions were:`
             : `Variables with the highest contributions:`;
           const headerLines = doc.splitTextToSize(header, PAGE_W - LM - RM);
           doc.text(headerLines, LM, y); y += headerLines.length * 4.2 + 1.5;
